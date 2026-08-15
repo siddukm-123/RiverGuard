@@ -15,6 +15,14 @@ ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp"}
 ALLOWED_VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv"}
 
 
+@api_bp.route("/health", methods=["GET"])
+def health():
+    """Dedicated healthcheck endpoint — no DB calls, no heavy imports, instant response.
+    Used by Railway's healthcheckPath instead of /api/metrics so a slow/misconfigured
+    Supabase connection can never fail the deploy healthcheck."""
+    return jsonify({"status": "ok"}), 200
+
+
 @api_bp.route("/rivers", methods=["GET"])
 def get_rivers():
     return jsonify(table_select("rivers"))
