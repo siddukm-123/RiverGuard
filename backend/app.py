@@ -52,7 +52,27 @@ def details_page():
     return send_from_directory(FRONTEND_DIR, "details.html")
 
 
-def _bootstrap_scheduler():
+_scheduler_started = False
+
+
+def bootstrap_scheduler():
+    """
+    Starts the APScheduler background thread (idempotent — safe to call more than once).
+
+    IMPORTANT: this must NOT run at module import time when running under
+    `gunicorn --preload`. Preload imports this module once in the master
+    process, then forks worker processes. Starting a background thread
+    before that fork is a classic gunicorn gotcha — the forked worker can
+    inherit a half-locked thread state and hang forever, which looks
+    exactly like a healthcheck timeout with no useful error in the logs.
+    That's why this is called lazily on the first request below, instead
+    of at the top of this file: only a forked worker ever handles a
+    request, so this is guaranteed to run after the fork, never before it.
+    """
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    _scheduler_started = True
     if os.getenv("ENABLE_SCHEDULER", "true").lower() != "true":
         return
     try:
@@ -63,7 +83,10 @@ def _bootstrap_scheduler():
         logging.getLogger(__name__).warning(f"Scheduler not started: {e}")
 
 
-_bootstrap_scheduler()
+@app.before_request
+def _start_scheduler_once():
+    if not _scheduler_started:
+        bootstrap_scheduler()
 
 
 if __name__ == "__main__":
