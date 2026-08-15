@@ -1,0 +1,13 @@
+# RiverGuard's backend deploys to Railway, not Vercel — Vercel only ever
+# needs frontend/, package.json, scripts/, and vercel.json. Excluding the
+# rest also stops Vercel's automatic Python/Flask detection from picking
+# up backend/app.py and trying to build it as a backend entrypoint.
+backend/
+data/
+supabase/
+requirements.txt
+runtime.txt
+railway.toml
+Procfile
+DEPLOY.md
+README.md
