@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RiverGuard — River Scan Details</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="css/style.css">
+<style>
+.details-layout { max-width: 1100px; margin: 0 auto; padding: 20px 28px 40px; }
+.river-row { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border); }
+.scan-card { background:var(--panel-raised); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:14px; }
+.point-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:10px; }
+.point-table th, .point-table td { padding:8px 10px; border-bottom:1px solid var(--border); text-align:left; }
+.point-table th { color:var(--text-muted); font-size:11px; text-transform:uppercase; }
+.change-high { color:var(--accent-high); font-weight:600; }
+.change-watch { color:var(--accent-watch); }
+#detail-panel { display:none; margin-top:20px; }
+#detail-panel.open { display:block; }
+#detail-map { height:320px; border-radius:8px; border:1px solid var(--border); margin-top:12px; }
+.img-pair { display:flex; gap:10px; margin-top:12px; }
+.img-pair img { width:100%; border-radius:6px; border:1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand"><span class="dot"></span> RIVERGUARD</div>
+  <div class="nav-links">
+    <a href="/details" class="active">Details</a>
+    <a href="/">Dashboard</a>
+    <a href="/detect">Manual Detection</a>
+  </div>
+</div>
+
+<div class="details-layout">
+  <div class="panel">
+    <div class="panel-header"><h2>Monitored rivers — scan history</h2></div>
+    <div id="rivers-detail-list">
+      <div class="empty-state">Loading rivers…</div>
+    </div>
+  </div>
+
+  <div id="detail-panel" class="panel" style="padding:18px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h2 id="detail-title" style="margin:0; font-family:var(--font-display); font-size:16px;">River details</h2>
+      <button class="btn" onclick="closeDetail()">Close</button>
+    </div>
+    <div id="detail-content"></div>
+    <div id="detail-map"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/env-config.js"></script>
+<script src="js/api.js"></script>
+<script src="js/details.js"></script>
+</body>
+</html>

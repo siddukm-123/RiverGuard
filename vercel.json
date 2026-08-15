@@ -1,0 +1,30 @@
+{
+  "$schema": "https://openapi.vercel.com/vercel.json",
+  "version": 2,
+  "name": "riverguard",
+  "buildCommand": "npm run build",
+  "outputDirectory": "frontend",
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://REPLACE-WITH-YOUR-RAILWAY-URL.up.railway.app/api/$1"
+    },
+    {
+      "source": "/detect",
+      "destination": "/upload.html"
+    },
+    {
+      "source": "/details",
+      "destination": "/details.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RiverGuard — Manual Detection</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand"><span class="dot"></span> RIVERGUARD</div>
+  <div class="nav-links">
+    <a href="/details">Details</a>
+    <a href="/">Dashboard</a>
+    <a href="/detect" class="active">Manual Detection</a>
+  </div>
+</div>
+
+<div class="layout" style="grid-template-columns: 1fr 420px;">
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Upload image or video</h2>
+    </div>
+    <div style="padding: 20px;">
+      <div class="upload-zone" id="upload-zone">
+        <div class="icon">📡</div>
+        <div><strong>Drop a file here or click to browse</strong></div>
+        <div class="hint">Images (.jpg, .png) or video (.mp4, .mov, .avi) — a truck, JCB, or person will be detected and evaluated</div>
+        <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.bmp,.mp4,.avi,.mov,.mkv" style="display:none;">
+      </div>
+
+      <div class="section-title">Context (optional, improves accuracy)</div>
+      <div class="form-row">
+        <label>River</label>
+        <select id="river-select">
+          <option value="">— No river / unknown location —</option>
+        </select>
+      </div>
+      <div style="display:flex; gap: 12px;">
+        <div class="form-row" style="flex:1;">
+          <label>Latitude</label>
+          <input type="number" step="0.0001" id="lat-input" placeholder="e.g. 14.4644">
+        </div>
+        <div class="form-row" style="flex:1;">
+          <label>Longitude</label>
+          <input type="number" step="0.0001" id="lng-input" placeholder="e.g. 75.9218">
+        </div>
+      </div>
+
+      <button class="btn primary" id="submit-btn" disabled>Run detection</button>
+      <span id="status-text" style="margin-left: 12px; font-size: 13px; color: var(--text-muted);"></span>
+
+      <div id="result-area"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><h2>How this works</h2></div>
+    <div style="padding: 18px; font-size: 13px; line-height: 1.6; color: var(--text-muted);">
+      <p><strong style="color: var(--text);">1. Detection</strong> — YOLOv8 scans the image, or sampled frames of the video, for trucks and people (JCB/excavator detection requires a custom-trained model — see README).</p>
+      <p><strong style="color: var(--text);">2. Tracking</strong> — for video, each object gets a persistent ID across frames so dwell time and movement can be measured.</p>
+      <p><strong style="color: var(--text);">3. Clustering</strong> — nearby detections are grouped into one incident (a truck + person together is a stronger signal than either alone).</p>
+      <p><strong style="color: var(--text);">4. Zone check</strong> — if you provide a river/location, the system checks whether activity falls inside the legal buffer zone.</p>
+      <p><strong style="color: var(--text);">5. Reasoning</strong> — an AI reasoning layer weighs all of this together and writes a plain-English verdict, the way a human inspector would.</p>
+    </div>
+  </div>
+</div>
+
+<script src="js/env-config.js"></script>
+<script src="js/api.js"></script>
+<script src="js/upload.js"></script>
+</body>
+</html>

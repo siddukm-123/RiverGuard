@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RiverGuard — Monitoring Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand"><span class="dot"></span> RIVERGUARD</div>
+  <div class="nav-links">
+    <a href="/details">Details</a>
+    <a href="/" class="active">Dashboard</a>
+    <a href="/detect">Manual Detection</a>
+  </div>
+</div>
+
+<div class="layout">
+  <div>
+    <div class="metric-row" id="metric-row">
+      <div class="metric-card"><div class="label">Rivers monitored</div><div class="value" id="m-rivers">—</div></div>
+      <div class="metric-card high"><div class="label">High severity</div><div class="value" id="m-high">—</div></div>
+      <div class="metric-card watch"><div class="label">Watch</div><div class="value" id="m-watch">—</div></div>
+      <div class="metric-card"><div class="label">Total alerts</div><div class="value" id="m-total">—</div></div>
+    </div>
+
+    <div class="panel" style="margin-bottom: 18px;">
+      <div class="panel-header"><h2>Add a river to monitor</h2></div>
+      <div style="padding: 16px 18px;">
+        <div style="display:flex; gap:10px;">
+          <input type="text" id="river-search-input" placeholder="Search a river, e.g. 'Tungabhadra river Davangere'" style="flex:1; padding:9px 12px; background:var(--panel-raised); border:1px solid var(--border); border-radius:7px; color:var(--text); font-size:13.5px;">
+          <button class="btn primary" id="river-search-btn">Search</button>
+        </div>
+        <div id="river-search-results" style="margin-top: 10px;"></div>
+      </div>
+    </div>
+
+    <div class="panel map-scan">
+      <div class="panel-header">
+        <h2>River watch map</h2>
+        <div style="display:flex; gap:14px; align-items:center; font-family:var(--font-mono); font-size:10.5px; color:var(--text-muted);">
+          <span><span style="display:inline-block;width:14px;height:14px;border:2px solid #E4572E;border-radius:2px;vertical-align:middle;margin-right:4px;"></span> HIGH alert</span>
+          <span><span style="display:inline-block;width:14px;height:14px;border:2px dashed #D9A441;border-radius:2px;vertical-align:middle;margin-right:4px;"></span> WATCH / low conf</span>
+          <span style="color:var(--accent-teal);">live</span>
+        </div>
+      </div>
+      <div id="map"></div>
+    </div>
+
+    <div class="panel" style="margin-top: 18px;">
+      <div class="panel-header"><h2>Monitored rivers</h2></div>
+      <div id="rivers-list" style="padding: 4px 0;"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Alert feed</h2>
+    </div>
+    <div class="alert-feed" id="alert-feed">
+      <div class="empty-state">Loading alerts…</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/env-config.js"></script>
+<script src="js/api.js"></script>
+<script src="js/dashboard.js"></script>
+</body>
+</html>

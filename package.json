@@ -1,0 +1,7 @@
+{
+  "name": "riverguard",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/prepare-vercel.js"
+  }
+}
