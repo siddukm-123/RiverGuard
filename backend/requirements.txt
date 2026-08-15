@@ -1,0 +1,28 @@
+Flask==3.0.3
+python-dotenv==1.0.1
+supabase==2.7.4
+gunicorn==22.0.0
+
+# Detection
+ultralytics==8.2.103
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+scikit-learn==1.5.2
+
+# Zone/geo
+geopandas==0.14.4
+shapely==2.0.5
+
+# Reasoning
+anthropic==0.34.2
+
+# Alerts
+twilio==9.3.2
+fpdf2==2.7.9
+
+# Satellite (optional — only needed if you configure real GEE credentials)
+earthengine-api==1.1.2
+requests==2.32.3
+
+# Automatic periodic scanning
+APScheduler==3.10.4
