@@ -21,7 +21,7 @@ ENV GDAL_CONFIG=/usr/bin/gdal-config
 WORKDIR /app
 
 # Install Python deps first so this layer is cached unless requirements.txt changes.
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
