@@ -7,7 +7,7 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "https://REPLACE-WITH-YOUR-RAILWAY-URL.up.railway.app/api/$1"
+      "destination": "https://riverguard.up.railway.app/api/$1"
     },
     {
       "source": "/detect",
