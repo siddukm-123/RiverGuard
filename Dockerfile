@@ -30,6 +30,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY backend ./backend
 COPY frontend ./frontend
 
+COPY start.sh .
+RUN chmod +x start.sh
+
 EXPOSE 8000
 
-CMD ["sh", "-c", "gunicorn --chdir backend app:app --bind 0.0.0.0:${PORT:-8000} --workers 1 --threads 8 --timeout 300 --preload"]
+CMD ["./start.sh"]
