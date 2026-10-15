@@ -24,6 +24,17 @@ CUSTOM_JCB_MODEL_PATH = os.getenv("CUSTOM_JCB_MODEL_PATH", "")  # optional: path
 DETECTION_CONF_THRESHOLD = float(os.getenv("DETECTION_CONF_THRESHOLD", "0.35"))
 VIDEO_SAMPLE_FPS = float(os.getenv("VIDEO_SAMPLE_FPS", "2"))  # how many frames/sec to actually run detection on for uploaded video
 
+VIDEO_MAX_SECONDS = float(os.getenv("VIDEO_MAX_SECONDS", "600"))  # hard cap on analysed video duration (protects CPU/RAM on small hosts)
+# COCO 'car'/'bus' are NOT trucks. Folding them into 'truck' (old behaviour) inflates the truck signal.
+# Set FOLD_VEHICLES_AS_TRUCK=true only if you deliberately want the legacy behaviour.
+FOLD_VEHICLES_AS_TRUCK = os.getenv("FOLD_VEHICLES_AS_TRUCK", "false").lower() == "true"
+# Class-name fragments (lower-case) of a custom model that count as excavation equipment ('jcb' bucket).
+EXCAVATOR_CLASS_KEYWORDS = [k.strip() for k in os.getenv(
+    "EXCAVATOR_CLASS_KEYWORDS", "excavator,jcb,backhoe,digger,dredger,bulldozer,loader").split(",") if k.strip()]
+
+# ── Low-light (software enhancement only — NOT thermal / infrared night vision) ──
+LOWLIGHT_DARK_LUMA_THRESHOLD = float(os.getenv("LOWLIGHT_DARK_LUMA_THRESHOLD", "70"))  # mean luma (0-255) below this = "dark"
+
 # ── Reasoning engine ────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # optional — if unset, falls back to rule-based reasoning
 REASONING_MODEL = os.getenv("REASONING_MODEL", "claude-sonnet-4-6")
@@ -59,6 +70,22 @@ def _materialize_gee_key():
 
 
 GEE_PRIVATE_KEY_PATH = _materialize_gee_key()
+
+# Satellite pairing rules (see satellite/gee_client.py). All optional — defaults are scientifically safer than the old +-30 day window.
+SAT_BASELINE_DAYS = int(os.getenv("SAT_BASELINE_DAYS", "30"))             # 'before' target = 'after' scene date - this many days
+SAT_MIN_SEPARATION_DAYS = int(os.getenv("SAT_MIN_SEPARATION_DAYS", "10"))  # two scenes closer than this are rejected as a pair
+SAT_SEARCH_HALF_WINDOW_DAYS = int(os.getenv("SAT_SEARCH_HALF_WINDOW_DAYS", "8"))
+SAT_MIN_VALID_FRACTION = float(os.getenv("SAT_MIN_VALID_FRACTION", "0.6"))  # min cloud-free pixel fraction inside the AOI
+SAT_RAIN_CONFOUNDER_MM = float(os.getenv("SAT_RAIN_CONFOUNDER_MM", "50"))  # rainfall between scenes above this flags a natural-change confounder
+
+# ── Alerts hygiene ───────────────────────────────────────────────────────
+NOTIFY_COOLDOWN_HOURS = float(os.getenv("NOTIFY_COOLDOWN_HOURS", "24"))  # don't re-notify the same river/source/severity inside this window
+# HIGH needs corroboration (excavator in frame, or satellite + ground evidence). Trucks/people alone cap at WATCH.
+HIGH_REQUIRES_CORROBORATION = os.getenv("HIGH_REQUIRES_CORROBORATION", "true").lower() == "true"
+
+# ── Access control (optional) ────────────────────────────────────────────
+# If set, every non-GET /api request (upload, scan, add/delete river...) must carry header X-API-Key: <value>.
+RIVERGUARD_API_KEY = os.getenv("RIVERGUARD_API_KEY", "")
 
 # ── Zone / buffer ────────────────────────────────────────────────────────
 DEFAULT_BUFFER_RADIUS_M = float(os.getenv("DEFAULT_BUFFER_RADIUS_M", "1000"))

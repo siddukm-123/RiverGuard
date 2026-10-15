@@ -154,15 +154,24 @@ async function triggerScanNow(riverId, btn) {
     const res = await apiFetch('/api/satellite-scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ river_id: riverId }),
+      body: JSON.stringify({ river_id: riverId, async: true }),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert(err.error || 'Scan failed — check server logs.');
+    const first = await res.json().catch(() => ({}));
+    if (!res.ok && res.status !== 202) {
+      alert(first.error || 'Scan failed — check server logs.');
       return;
+    }
+    const result = res.status === 202
+      ? await pollJob(first.job_id, (job, secs) => { button.textContent = `Scanning… ${secs}s`; })
+      : first;
+    if (result && result.status === 'no_data') {
+      // Honest outcome: no usable before/after pair, so nothing was invented and no alert was raised.
+      alert('No alert was created.\n\n' + (result.message || 'No usable Sentinel-2 comparison was available.'));
     }
     await refreshAll();
     await loadRivers();
+  } catch (e) {
+    alert(e.message || 'Scan failed.');
   } finally {
     button.disabled = false;
     button.textContent = 'Scan now';
@@ -262,22 +271,23 @@ async function loadAlerts() {
     const signals = parseSignals(a);
     const isReal = a.source === 'satellite' && signals.synthetic_data === false;
     const isDemo = a.source === 'satellite' && signals.synthetic_data === true;
-    const dataLabel = isReal ? '✓ real Sentinel-2 comparison' : (isDemo ? '⚠ demo data (GEE not connected)' : '');
+    const dataLabel = isReal ? `✓ real Sentinel-2: ${escapeHtml(signals.before_date || '?')} → ${escapeHtml(signals.after_date || '?')}` : (isDemo ? '⚠ SYNTHETIC demo data — not a real observation (GEE not connected)' : '');
     const corridorInfo = signals.corridor_points_scanned ? ` · ${signals.corridor_points_scanned} corridor points scanned` : '';
     return `
     <div class="alert-item" onclick="focusAlert(${a.lat}, ${a.lng})">
       <span class="severity-badge ${a.severity}">${a.severity}</span>
-      <span style="font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); margin-left: 8px;">${(a.confidence || 0).toFixed(0)}% conf</span>
+      <span style="font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); margin-left: 8px;">risk ${(a.confidence || 0).toFixed(0)}/100</span>
       <div class="meta">${a.source === 'satellite' ? '🛰 satellite' : '📹 manual upload'} · ${timeAgo(a.detected_at)}${corridorInfo}</div>
       ${dataLabel ? `<div class="meta" style="color:${isReal ? 'var(--accent-teal)' : 'var(--accent-watch)'};">${dataLabel}</div>` : ''}
-      ${signals.hotspot_label ? `<div class="meta">Hotspot: ${escapeHtml(signals.hotspot_label)} · change score ${((signals.satellite_change_score || 0) * 100).toFixed(0)}%</div>` : ''}
+      ${signals.hotspot_label ? `<div class="meta">Hotspot: ${escapeHtml(signals.hotspot_label)} · corridor-relative change ${((signals.satellite_change_score || 0) * 100).toFixed(0)}%${signals.rain_confounder ? ' · ⚠ heavy rain between scenes' : ''}</div>` : ''}
+      ${a.source === 'manual_upload' && signals.object_counts ? `<div class="meta">${Object.entries(signals.object_counts).map(([k, v]) => `${escapeHtml(k)}: ${v}`).join(' · ') || 'no relevant objects'}${signals.lowlight && (signals.lowlight.applied || signals.lowlight.frames_enhanced) ? ' · low-light enhanced' : ''}</div>` : ''}
       <div class="reasoning">${escapeHtml(a.reasoning_text || '')}</div>
       ${a.before_image_url && a.after_image_url ? `
         <div style="display:flex; gap:6px; margin-top:8px;">
           <div style="flex:1;"><img src="/api/alerts/${a.id}/before.jpg" style="width:100%; border-radius:6px; border:1px solid var(--border);"><div class="meta" style="text-align:center; margin-top:2px;">before</div></div>
           <div style="flex:1;"><img src="/api/alerts/${a.id}/after.jpg" style="width:100%; border-radius:6px; border:1px solid var(--border);"><div class="meta" style="text-align:center; margin-top:2px;">after</div></div>
         </div>
-      ` : (a.source === 'satellite' ? '<div class="meta" style="margin-top:6px;">No before/after thumbnails — connect Google Earth Engine for real imagery.</div>' : '')}
+      ` : (a.source === 'satellite' ? '<div class="meta" style="margin-top:6px;">No before/after thumbnails available for this scan.</div>' : '')}
       ${a.evidence_pdf_url ? `<a href="/api/alerts/${a.id}/evidence.pdf" target="_blank" style="font-size:11.5px; color: var(--accent-teal); text-decoration:none;">↓ evidence PDF</a>` : ''}
     </div>`;
   }).join('');
@@ -286,7 +296,7 @@ async function loadAlerts() {
     if (a.lat == null || a.lng == null) return;
     const signals = parseSignals(a);
     const color = severityColor[a.severity] || '#7E9296';
-    const popup = `<strong>${a.severity}</strong> (${(a.confidence || 0).toFixed(0)}% conf)<br>${escapeHtml(a.reasoning_text || '')}`;
+    const popup = `<strong>${a.severity}</strong> (risk ${(a.confidence || 0).toFixed(0)}/100)<br>${escapeHtml(a.reasoning_text || '')}`;
 
     // Red / yellow bordered zone boxes on the map (not filled solid)
     if (a.severity === 'HIGH') {
@@ -315,7 +325,7 @@ async function loadAlerts() {
         fillOpacity: 0.03,
         dashArray: '5 7',
         radiusM: 500,
-      }, `<strong>Corridor watch</strong><br>${escapeHtml(sr.label || 'segment')}<br>Change score: ${(score * 100).toFixed(0)}%`);
+      }, `<strong>Corridor watch</strong><br>${escapeHtml(sr.label || 'segment')}<br>Corridor-relative change: ${(score * 100).toFixed(0)}%`);
     });
   });
 }
@@ -329,6 +339,23 @@ async function refreshAll() {
   await Promise.all([loadMetrics(), loadAlerts()]);
 }
 
+async function loadSystemStatus() {
+  const el = document.getElementById('status-banner');
+  if (!el) return;
+  try {
+    const res = await apiFetch('/api/system-status');
+    const st = await res.json();
+    const notes = [];
+    if (!st.storage_persistent) notes.push('⚠ In-memory storage: data is lost on restart (Supabase not connected).');
+    if (st.satellite !== 'real_gee') notes.push('⚠ Satellite results are SYNTHETIC demo values (Google Earth Engine not configured).');
+    if (st.model && !st.model.excavator_detection_available) notes.push('ℹ Excavator/JCB detection is not available with the loaded model (trucks and people only).');
+    if (!st.write_protection) notes.push('ℹ Write protection is off (RIVERGUARD_API_KEY not set).');
+    el.style.display = notes.length ? 'block' : 'none';
+    el.innerHTML = notes.map(escapeHtml).join('<br>');
+  } catch { el.style.display = 'none'; }
+}
+
+loadSystemStatus();
 loadRivers();
 refreshAll();
 setInterval(refreshAll, 30000);

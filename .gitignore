@@ -1,0 +1,10 @@
+.env
+secrets/
+venv/
+__pycache__/
+*.pyc
+node_modules/
+data/uploads/
+.pytest_cache/
+frontend/js/env-config.js
+yolov8n.pt

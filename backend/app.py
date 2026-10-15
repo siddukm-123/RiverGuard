@@ -17,6 +17,13 @@ app.config["MAX_CONTENT_LENGTH"] = config.MAX_UPLOAD_MB * 1024 * 1024
 
 app.register_blueprint(api_bp)
 
+_log = logging.getLogger(__name__)
+if config.FLASK_SECRET_KEY == "dev-secret-change-me" and not config.FLASK_DEBUG:
+    _log.warning("FLASK_SECRET_KEY is the insecure default - set a long random value on Railway.")
+if not config.RIVERGUARD_API_KEY:
+    _log.warning("RIVERGUARD_API_KEY is not set: anyone who knows the URL can upload, scan, add or delete rivers. "
+                 "Set it on Railway to require X-API-Key on write requests.")
+
 
 @app.before_request
 def handle_preflight():
@@ -33,8 +40,21 @@ def add_cors_headers(response):
     elif origin:
         response.headers["Access-Control-Allow-Origin"] = origin
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
     return response
+
+
+@app.errorhandler(413)
+def _too_large(e):
+    return {"error": f"File too large. Maximum upload is {config.MAX_UPLOAD_MB} MB.", "code": "payload_too_large"}, 413
+
+
+@app.errorhandler(404)
+def _not_found(e):
+    if request.path.startswith("/api/"):
+        return {"error": "Not found", "code": "not_found"}, 404
+    return e
 
 
 @app.route("/")

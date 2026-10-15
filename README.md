@@ -13,9 +13,9 @@ Both tiers feed the same alerting pipeline: buffer-zone check → severity
 scoring → WhatsApp/email notification to the mapped officer → PDF evidence
 report → live dashboard.
 
-This has been tested end-to-end in development: real YOLOv8 detection on a
-real photo and a test video, full pipeline (clustering → reasoning → PDF
-generation with SHA-256 hash), and all API routes. The one thing that needs
+See `PROJECT_AUDIT.md` (what was fixed and why) and `TEST_REPORT.md` (what was actually executed, what was mocked, what is unverified). Run tests: `cd backend && python -m pytest tests -q`.
+
+New in v2: low-light enhancement (software only — not night vision), async jobs, evidence verify endpoint, corridor-relative satellite scoring, `/api/system-status`. A detection or satellite change is a screening signal, never proof of illegal mining. The one thing that needs
 your own credentials to test is the satellite tier against real Earth Engine
 data and the WhatsApp send — both work correctly with graceful fallbacks
 when unconfigured (see below).

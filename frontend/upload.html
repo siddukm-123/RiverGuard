@@ -26,7 +26,7 @@
       <div class="upload-zone" id="upload-zone">
         <div class="icon">📡</div>
         <div><strong>Drop a file here or click to browse</strong></div>
-        <div class="hint">Images (.jpg, .png) or video (.mp4, .mov, .avi) — a truck, JCB, or person will be detected and evaluated</div>
+        <div class="hint">Images (.jpg, .png, .bmp) or video (.mp4, .mov, .avi, .mkv) — trucks and people are detected; excavators only if a custom model is loaded</div>
         <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.bmp,.mp4,.avi,.mov,.mkv" style="display:none;">
       </div>
 
@@ -48,6 +48,19 @@
         </div>
       </div>
 
+      <div class="section-title">Low-light processing</div>
+      <div class="form-row">
+        <label for="lowlight-select">Enhancement for dark footage</label>
+        <select id="lowlight-select">
+          <option value="auto" selected>Auto — only if the image is measured as dark</option>
+          <option value="off">Off — analyse the file as uploaded</option>
+          <option value="force">Force — always enhance</option>
+        </select>
+        <div class="rg-note">Software contrast enhancement (denoise → gamma → CLAHE). It is <strong>not</strong> thermal or infrared night vision and cannot recover detail the camera never captured. Original and enhanced detections are reported separately.</div>
+      </div>
+
+      <div id="preview-area"></div>
+
       <button class="btn primary" id="submit-btn" disabled>Run detection</button>
       <span id="status-text" style="margin-left: 12px; font-size: 13px; color: var(--text-muted);"></span>
 
@@ -56,13 +69,15 @@
   </div>
 
   <div class="panel">
+    <div class="panel-header"><h2>Detector status</h2></div>
+    <div id="model-status" style="padding: 14px 18px; font-size: 12.5px; line-height: 1.6; color: var(--text-muted);">Loading…</div>
     <div class="panel-header"><h2>How this works</h2></div>
     <div style="padding: 18px; font-size: 13px; line-height: 1.6; color: var(--text-muted);">
-      <p><strong style="color: var(--text);">1. Detection</strong> — YOLOv8 scans the image, or sampled frames of the video, for trucks and people (JCB/excavator detection requires a custom-trained model — see README).</p>
+      <p><strong style="color: var(--text);">1. Detection</strong> — YOLOv8 scans the image, or sampled frames of the video, for trucks and people (excavator/JCB detection requires a custom-trained model — see README).</p>
       <p><strong style="color: var(--text);">2. Tracking</strong> — for video, each object gets a persistent ID across frames so dwell time and movement can be measured.</p>
       <p><strong style="color: var(--text);">3. Clustering</strong> — nearby detections are grouped into one incident (a truck + person together is a stronger signal than either alone).</p>
       <p><strong style="color: var(--text);">4. Zone check</strong> — if you provide a river/location, the system checks whether activity falls inside the legal buffer zone.</p>
-      <p><strong style="color: var(--text);">5. Reasoning</strong> — an AI reasoning layer weighs all of this together and writes a plain-English verdict, the way a human inspector would.</p>
+      <p><strong style="color: var(--text);">5. Reasoning</strong> — a transparent rule-based scorer weighs all of this and explains every point it awards. A detection is a signal to investigate, not proof of illegal mining.</p>
     </div>
   </div>
 </div>

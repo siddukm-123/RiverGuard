@@ -107,23 +107,24 @@ async function showRiverDetails(riverId) {
     html += `<div class="section-title" style="margin-top:20px;">Scan history (${scans.length})</div>`;
     scans.forEach(scan => {
       const sig = parseSignals(scan);
-      const beforeDate = sig.before_date || '—';
-      const afterDate = sig.after_date || '—';
+      const beforeDate = escapeHtml(sig.before_date || '—');
+      const afterDate = escapeHtml(sig.after_date || '—');
       const isReal = sig.synthetic_data === false;
       const results = sig.scan_results || [];
       html += `
         <div class="scan-card">
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <span class="severity-badge ${scan.severity}">${scan.severity}</span>
-            <span class="meta">${(scan.confidence || 0).toFixed(0)}% conf · ${timeAgo(scan.detected_at)}</span>
+            <span class="meta">risk ${(scan.confidence || 0).toFixed(0)}/100 · ${timeAgo(scan.detected_at)}</span>
             <span class="meta" style="color:${isReal ? 'var(--accent-teal)' : 'var(--accent-watch)'};">
-              ${isReal ? 'Real Sentinel-2' : 'Demo data'}
+              ${isReal ? 'Real Sentinel-2' : 'SYNTHETIC demo data'}
             </span>
           </div>
           <div class="meta" style="margin-top:8px;">
             <strong>Satellite dates:</strong> before <code>${beforeDate}</code> → after <code>${afterDate}</code>
-            · Hotspot: ${escapeHtml(sig.hotspot_label || '—')} · change ${((sig.satellite_change_score || 0) * 100).toFixed(0)}%
+            · Hotspot: ${escapeHtml(sig.hotspot_label || '—')} · corridor-relative change ${((sig.satellite_change_score || 0) * 100).toFixed(0)}%
           </div>
+          ${isReal ? `<div class="meta" style="margin-top:4px;">Method: ${escapeHtml(sig.method || '—')} · mask: ${escapeHtml(sig.mask_source || '—')} · usable points: ${sig.corridor_points_usable ?? '—'}/${sig.corridor_points_scanned ?? '—'} · rain between scenes: ${sig.rain_mm_between_scenes != null ? sig.rain_mm_between_scenes + ' mm' : 'n/a'}${sig.rain_confounder ? ' ⚠' : ''}${sig.background_available === false ? ' · ⚠ river-wide background NOT removed (<3 usable points)' : ''}</div>` : ''}
           <div class="reasoning" style="margin-top:8px; font-size:13px;">${escapeHtml(scan.reasoning_text || '')}</div>
           ${scan.before_image_url && scan.after_image_url ? `
             <div class="img-pair">
@@ -132,16 +133,18 @@ async function showRiverDetails(riverId) {
             </div>` : ''}
           ${results.length ? `
             <table class="point-table">
-              <thead><tr><th>Point</th><th>Location</th><th>Change score</th><th>NDWI diff</th><th>Data</th></tr></thead>
+              <thead><tr><th>Point</th><th>Location</th><th>Relative change</th><th>Changed bed area</th><th>NDWI diff</th><th>Scenes</th><th>Data</th></tr></thead>
               <tbody>
                 ${results.map(r => {
                   const cls = (r.change_score || 0) >= 0.5 ? 'change-high' : ((r.change_score || 0) >= 0.25 ? 'change-watch' : '');
                   return `<tr>
                     <td>${escapeHtml(r.label)}</td>
                     <td>${r.lat?.toFixed(4)}, ${r.lng?.toFixed(4)}</td>
-                    <td class="${cls}">${((r.change_score || 0) * 100).toFixed(1)}%</td>
+                    <td class="${cls}">${r.change_score != null ? (r.change_score * 100).toFixed(1) + '%' : escapeHtml(r.status || 'n/a')}</td>
+                    <td>${r.changed_fraction != null ? (r.changed_fraction * 100).toFixed(1) + '%' : '—'}</td>
                     <td>${r.raw_ndwi_diff != null ? r.raw_ndwi_diff : '—'}</td>
-                    <td>${r.synthetic ? 'demo' : 'real'}</td>
+                    <td>${escapeHtml(r.before_date || '—')} → ${escapeHtml(r.after_date || '—')}</td>
+                    <td>${r.synthetic ? 'SYNTHETIC' : 'real'}</td>
                   </tr>`;
                 }).join('')}
               </tbody>

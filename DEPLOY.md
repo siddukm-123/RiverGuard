@@ -244,3 +244,25 @@ Open `http://localhost:8000` — no Vercel env vars needed locally.
 | `frontend/js/api.js` | API fetch helper |
 | `frontend/js/env-config.js` | Local dev fallback / Vercel build output |
 | `.gitignore` | Blocks secrets and runtime data |
+
+
+---
+
+## v2 update — what to change on Railway / Vercel / Supabase
+
+**Nothing is required.** The app boots with your existing variables. Everything below is optional.
+
+| Where | Action | Why |
+|---|---|---|
+| Railway | Redeploy (push the new files). Dockerfile now bakes YOLO weights and `railway.toml` has `healthcheckPath=/api/health` | faster first detection |
+| Railway (recommended) | Add `RIVERGUARD_API_KEY=<long random>` | write protection; the UI asks for it once per tab |
+| Railway (recommended) | Mount a Volume at `/app/data` + `UPLOAD_DIR`/`EVIDENCE_DIR` (already in this guide) | evidence/images survive redeploys |
+| Railway (optional) | `SAT_BASELINE_DAYS`, `SAT_MIN_SEPARATION_DAYS`, `SAT_MIN_VALID_FRACTION`, `NOTIFY_COOLDOWN_HOURS`, `HIGH_REQUIRES_CORROBORATION`, `FOLD_VEHICLES_AS_TRUCK`, `VIDEO_MAX_SECONDS`, `CUSTOM_JCB_MODEL_PATH` | defaults are safe; see `.env.example` |
+| Vercel | nothing | `.vercelignore` is now correctly named |
+| Supabase | optional: run `supabase/migrations/0002_optional_hardening.sql` (provenance columns). Its RLS-tightening block is commented out; enable only after `GET /api/system-status` shows `"supabase_key_role":"service_role"` | hardening |
+
+After deploy open `/api/system-status`: it tells you whether storage is persistent, GEE is real or synthetic, whether the model has excavator support, and whether notifications are configured.
+
+Behaviour changes you will notice: satellite scans compare scenes ~30 days apart and may answer *"No usable Sentinel-2 comparison"* instead of inventing a number; satellite-only alerts can no longer be HIGH; uploads without GPS no longer raise WATCH by themselves; scans/videos run as background jobs.
+
+Known limits: jobs live in the single gunicorn worker (keep `--workers 1`); very large videos through the Vercel rewrite may hit proxy body limits — if so, set Vercel `VITE_API_BASE` to the Railway URL (CORS is open by default) so uploads go direct.

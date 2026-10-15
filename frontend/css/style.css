@@ -343,3 +343,24 @@ a { color: inherit; }
   letter-spacing: 0.06em;
   margin: 20px 0 10px;
 }
+
+
+/* ── Status banner + detection results (added) ───────────────────── */
+.status-banner { margin: 12px 28px 0; padding: 10px 14px; border: 1px solid rgba(217,164,65,0.45); background: rgba(217,164,65,0.08); border-radius: 8px; color: var(--text); font-size: 12.5px; line-height: 1.6; }
+.rg-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.rg-table th, .rg-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.rg-table th { color: var(--text-muted); font-size: 11px; text-transform: uppercase; }
+.rg-note { font-size: 12px; color: var(--text-muted); line-height: 1.55; margin-top: 8px; }
+.rg-warn { border: 1px solid rgba(217,164,65,0.5); background: rgba(217,164,65,0.08); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; margin-top: 10px; }
+.rg-err { border: 1px solid rgba(228,87,46,0.55); background: rgba(228,87,46,0.08); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-top: 10px; }
+.rg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 10px; }
+.rg-stat { background: var(--panel-raised); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.rg-stat .k { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.rg-stat .v { font-family: var(--font-mono); font-size: 20px; margin-top: 2px; }
+.rg-tabs { display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap; }
+.rg-tabs button { padding: 5px 10px; font-size: 12px; }
+.rg-tabs button.active { background: var(--accent-teal); color: #05100f; border-color: var(--accent-teal); }
+.rg-pre { font-family: var(--font-mono); font-size: 11.5px; word-break: break-all; color: var(--text-muted); }
+details.rg-details { margin-top: 12px; }
+details.rg-details > summary { cursor: pointer; font-size: 12.5px; color: var(--accent-teal); }
+@media (max-width: 760px) { .status-banner { margin: 10px 12px 0; } .rg-table { display: block; overflow-x: auto; } }

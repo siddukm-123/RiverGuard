@@ -29,6 +29,11 @@ RUN pip install --no-cache-dir --upgrade pip \
 # the frontend's static files directly — see FRONTEND_DIR in backend/app.py).
 COPY backend ./backend
 COPY frontend ./frontend
+COPY models ./models
+
+# Bake the default YOLO weights into the image so the first detection request never downloads them
+# (a slow first request used to risk a proxy timeout). Failure here is non-fatal: it falls back to runtime download.
+RUN cd /app && python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')" || echo "weights prefetch skipped"
 
 COPY start.sh .
 RUN chmod +x start.sh

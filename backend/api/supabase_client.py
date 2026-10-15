@@ -112,6 +112,30 @@ def table_insert(table, row):
     return result.data[0] if result.data else row
 
 
+def table_insert_many(table, rows):
+    """Batch insert (one round trip on Supabase). Returns the inserted rows."""
+    if not rows:
+        return []
+    client = get_client()
+    prepared = []
+    for r in rows:
+        r = dict(r)
+        r.setdefault("id", str(uuid.uuid4()))
+        r.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+        prepared.append(r)
+    if client is None:
+        _memory[table].extend(prepared)
+        return prepared
+    result = client.table(table).insert(prepared).execute()
+    return result.data or prepared
+
+
+def storage_mode():
+    """'supabase' when a real database client is active, otherwise 'memory' (data lost on restart)."""
+    get_client()
+    return "memory" if _use_memory else "supabase"
+
+
 def table_update(table, row_id, updates):
     client = get_client()
     if client is None:

@@ -15,6 +15,8 @@ from datetime import datetime, timezone, timedelta
 logger = logging.getLogger(__name__)
 
 _scheduler = None
+_last_attempt = {}  # river_id -> datetime of the last attempt (in-memory throttle for scans that found no usable data)
+RETRY_AFTER_NO_DATA_HOURS = 12
 
 
 def _due_for_scan(river):
@@ -41,13 +43,20 @@ def run_due_scans():
         if not _due_for_scan(river):
             continue
         try:
+            last = _last_attempt.get(river["id"])
+            if last and datetime.now(timezone.utc) - last < timedelta(hours=RETRY_AFTER_NO_DATA_HOURS):
+                continue  # recently tried and found no usable scenes - don't hammer Earth Engine every hour
             logger.info(f"Scheduled scan due for river '{river['name']}' — running now.")
+            _last_attempt[river["id"]] = datetime.now(timezone.utc)
             after_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            before_date = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
 
-            alert = pipeline.process_satellite_scan(river, before_date, after_date)
+            # before_date=None -> the pipeline picks a distinct clean scene ~SAT_BASELINE_DAYS before the newest clean scene
+            alert = pipeline.process_satellite_scan(river, None, after_date)
             table_update("rivers", river["id"], {"last_scanned_at": datetime.now(timezone.utc).isoformat()})
-            logger.info(f"Scan complete for '{river['name']}': {alert['severity']} ({alert['confidence']}%)")
+            _last_attempt.pop(river["id"], None)
+            logger.info(f"Scan complete for '{river['name']}': {alert['severity']} (risk {alert['confidence']}/100)")
+        except pipeline.NoSatelliteData as e:
+            logger.warning(f"Scheduled scan for '{river['name']}' found no usable imagery: {e}")
         except Exception as e:
             logger.error(f"Scheduled scan failed for river '{river['name']}': {e}")
 
