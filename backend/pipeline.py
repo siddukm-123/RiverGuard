@@ -18,6 +18,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import config
+import gcs_storage
 from detection import detector, zone_checker, cluster_engine, reasoning
 from alerts import pdf_generator, notifier
 from api.supabase_client import table_insert, table_insert_many, table_select, table_update
@@ -184,7 +185,8 @@ def _finalize_evidence(alert, river_name, detections, image_paths, extra):
     """PDF + hash + DB update. Failure here must not lose the alert."""
     try:
         pdf_path, sha256 = pdf_generator.generate_evidence_pdf(alert, river_name, detections, image_paths, extra=extra)
-        updates = {"evidence_pdf_url": pdf_path, "evidence_sha256": sha256}
+        pdf_ref = gcs_storage.upload_pdf(alert["id"], pdf_path) or pdf_path  # keep the local path if GCS is off / failed
+        updates = {"evidence_pdf_url": pdf_ref, "evidence_sha256": sha256}
         table_update("alerts", alert["id"], updates)
         alert.update(updates)
     except Exception as e:
@@ -237,6 +239,7 @@ def process_image_upload(image_path, river=None, lat=None, lng=None, lowlight_mo
         media["enhanced"] = _save_jpg(config.EVIDENCE_DIR / f"enhanced_{alert_id}.jpg", enh_annot)
         media["comparison"] = _save_jpg(config.EVIDENCE_DIR / f"comparison_{alert_id}.jpg", _comparison_image(annotated, enh_annot))
         pdf_images = [media["comparison"]]
+    media = gcs_storage.upload_media(alert_id, media)  # local paths -> gs:// refs when GCS_BUCKET is set (pdf_images stay local)
     signals["media"] = media
 
     alert = table_insert("alerts", {
@@ -321,6 +324,7 @@ def process_video_upload(video_path, river=None, lat=None, lng=None, lowlight_mo
             media["enhanced"] = _save_jpg(config.EVIDENCE_DIR / f"enhanced_{alert_id}.jpg", enh_annot)
             media["comparison"] = _save_jpg(config.EVIDENCE_DIR / f"comparison_{alert_id}.jpg", _comparison_image(annotated, enh_annot))
             pdf_images = [media["comparison"]]
+    media = gcs_storage.upload_media(alert_id, media)  # video originals are never uploaded (only image files are)
     signals["media"] = media
 
     alert = table_insert("alerts", {
@@ -442,12 +446,16 @@ def process_satellite_scan(river, before_date=None, after_date=None):
             logger.warning(f"Thumbnail generation failed: {e}")
             before_local = after_local = None
 
+    before_ref, after_ref = (str(before_local) if before_local else None), (str(after_local) if after_local else None)
+    if before_local and after_local:
+        refs = gcs_storage.upload_media(alert_id, {"before": str(before_local), "after": str(after_local)})
+        before_ref, after_ref = refs["before"], refs["after"]
+
     alert = table_insert("alerts", {
         "id": alert_id, "river_id": river["id"], "source": "satellite", "severity": verdict["severity"],
         "confidence": verdict["score"], "lat": hotspot["lat"], "lng": hotspot["lng"], "inside_buffer": True,
         "reasoning_text": text, "reasoning_signals": signals,
-        "before_image_url": str(before_local) if before_local else None,
-        "after_image_url": str(after_local) if after_local else None, "detected_at": _now().isoformat(),
+        "before_image_url": before_ref, "after_image_url": after_ref, "detected_at": _now().isoformat(),
     })
     _finalize_evidence(alert, river["name"], [], [p for p in (before_local, after_local) if p] or None, extra=signals)
     signals["notification"] = _notify_if_needed(alert, river, signals)
