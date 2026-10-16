@@ -6,11 +6,14 @@ L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/
   maxZoom: 19,
 }).addTo(map);
 
-// Subtle labels overlay so place names remain readable on satellite imagery
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
-  attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+// Labels overlay so place names remain readable on satellite imagery.
+// Esri's free reference layer (same provider as the imagery, no API key). The old CARTO overlay now requires a key
+// and painted an "API KEY REQUIRED" watermark over the whole map.
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+  attribution: 'Labels &copy; Esri',
   maxZoom: 19,
-  opacity: 0.85,
+  maxNativeZoom: 13,  // Esri labels exist up to this level; Leaflet scales them beyond it instead of showing blank tiles
+  opacity: 0.9,
 }).addTo(map);
 
 const severityColor = { HIGH: '#E4572E', WATCH: '#D9A441', SAFE: '#3FA796' };
