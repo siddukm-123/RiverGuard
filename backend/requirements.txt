@@ -4,6 +4,12 @@ supabase==2.7.4
 gunicorn==22.0.0
 
 # Detection
+# CPU-only PyTorch. Railway has no GPU, and the default PyPI torch wheel drags in ~3 GB of NVIDIA CUDA libraries
+# (cudnn, cublas, nccl, cufft, triton...), which is what made every build/push take 10+ minutes.
+# The +cpu wheels from this index are ~200 MB. pip prefers "X.Y.Z+cpu" over plain "X.Y.Z" when both exist.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
 ultralytics==8.2.103
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
@@ -15,6 +21,9 @@ shapely==2.0.5
 
 # Reasoning
 anthropic==0.34.2
+
+# Image / evidence storage (Google Cloud Storage). Already installed via earthengine-api; listed so it is explicit.
+google-cloud-storage
 
 # Alerts
 twilio==9.3.2
