@@ -71,6 +71,26 @@ def _materialize_gee_key():
 
 GEE_PRIVATE_KEY_PATH = _materialize_gee_key()
 
+# ── Google Cloud Storage (evidence images / PDFs) ───────────────────────
+# Railway's disk is wiped on every deploy. Set GCS_BUCKET to keep images + PDFs in a bucket instead.
+# Credentials: the same service-account JSON as Earth Engine (GEE_PRIVATE_KEY_JSON) unless you paste a
+# dedicated one into GCS_PRIVATE_KEY_JSON. The account needs "Storage Object Admin" on the bucket.
+GCS_BUCKET = os.getenv("GCS_BUCKET", "").strip()
+GCS_PROJECT_ID = os.getenv("GCS_PROJECT_ID", "").strip() or GEE_PROJECT_ID
+
+
+def _materialize_gcs_key():
+    json_inline = os.getenv("GCS_PRIVATE_KEY_JSON", "").strip()
+    if json_inline:
+        path = Path("/tmp/gcs-key.json")
+        if not path.exists():
+            path.write_text(json_inline, encoding="utf-8")
+        return str(path)
+    return GEE_PRIVATE_KEY_PATH  # reuse the Earth Engine service account
+
+
+GCS_KEY_PATH = _materialize_gcs_key()
+
 # Satellite pairing rules (see satellite/gee_client.py). All optional — defaults are scientifically safer than the old +-30 day window.
 SAT_BASELINE_DAYS = int(os.getenv("SAT_BASELINE_DAYS", "30"))             # 'before' target = 'after' scene date - this many days
 SAT_MIN_SEPARATION_DAYS = int(os.getenv("SAT_MIN_SEPARATION_DAYS", "10"))  # two scenes closer than this are rejected as a pair
