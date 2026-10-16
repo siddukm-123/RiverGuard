@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from pathlib import Path
 
 from flask import Flask, send_from_directory, request
@@ -7,7 +8,11 @@ from flask import Flask, send_from_directory, request
 import config
 from api.routes import api_bp
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+# httpx logs one INFO line per Supabase request. The dashboard makes dozens per page load, which exceeded Railway's
+# 500 logs/sec limit (dropped messages hid the real errors). Keep warnings/errors only.
+for _noisy in ("httpx", "httpcore", "hpack", "h2", "urllib3", "google.auth", "google.cloud"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
