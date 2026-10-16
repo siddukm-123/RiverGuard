@@ -8,6 +8,8 @@ Once you add real credentials to .env, it transparently switches to
 talking to your actual Supabase Postgres database.
 """
 import logging
+import threading
+import time
 from datetime import datetime, timezone
 import uuid
 
@@ -17,6 +19,15 @@ logger = logging.getLogger(__name__)
 
 _client = None
 _use_memory = False
+_client_lock = threading.Lock()
+
+# supabase-py talks HTTP/2 over ONE shared connection. When Supabase / a proxy closes an idle connection (or many
+# threads hit it at once) httpx raises "RemoteProtocolError: Server disconnected". These errors are transient:
+# rebuild the client and retry instead of returning a 500 to the browser.
+_TRANSIENT_ERRORS = {"RemoteProtocolError", "ReadError", "WriteError", "ConnectError", "ConnectTimeout",
+                     "ReadTimeout", "WriteTimeout", "PoolTimeout", "LocalProtocolError", "NetworkError",
+                     "TimeoutException", "CloseError"}
+_MAX_ATTEMPTS = 3
 
 # ── in-memory fallback store (dev-only, resets on restart) ──────────────
 _memory = {
@@ -55,22 +66,54 @@ def get_client():
     if _client is not None or _use_memory:
         return _client
 
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        logger.warning("SUPABASE_URL/SUPABASE_KEY not set — running with in-memory storage. "
-                        "Set them in .env to persist data in your real Supabase project.")
-        _use_memory = True
-        _seed_memory()
-        return None
+    with _client_lock:
+        if _client is not None or _use_memory:
+            return _client
 
-    try:
-        from supabase import create_client
-        _client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        return _client
-    except Exception as e:
-        logger.error(f"Failed to create Supabase client, falling back to memory store: {e}")
-        _use_memory = True
-        _seed_memory()
-        return None
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            logger.warning("SUPABASE_URL/SUPABASE_KEY not set — running with in-memory storage. "
+                            "Set them in .env to persist data in your real Supabase project.")
+            _use_memory = True
+            _seed_memory()
+            return None
+
+        try:
+            from supabase import create_client
+            _client = create_client(SUPABASE_URL, SUPABASE_KEY)
+            return _client
+        except Exception as e:
+            logger.error(f"Failed to create Supabase client, falling back to memory store: {e}")
+            _use_memory = True
+            _seed_memory()
+            return None
+
+
+def _is_transient(exc):
+    return any(c.__name__ in _TRANSIENT_ERRORS for c in type(exc).__mro__)
+
+
+def _drop_client(bad_client):
+    """Forget a broken client so the next get_client() builds a fresh connection (first failing thread wins)."""
+    global _client
+    with _client_lock:
+        if _client is bad_client:
+            _client = None
+
+
+def _exec(fn, on_retry=None):
+    """Runs fn(client) with automatic retry + client rebuild on transient connection errors."""
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        client = get_client()
+        try:
+            return fn(client)
+        except Exception as e:  # noqa: BLE001
+            if not _is_transient(e) or attempt == _MAX_ATTEMPTS:
+                raise
+            logger.warning(f"Supabase connection error ({e.__class__.__name__}: {e}); retry {attempt}/{_MAX_ATTEMPTS - 1}")
+            _drop_client(client)
+            time.sleep(0.25 * attempt)
+            if on_retry:
+                on_retry()
 
 
 def table_select(table, filters=None, order_by=None, desc=False, limit=None):
@@ -86,16 +129,17 @@ def table_select(table, filters=None, order_by=None, desc=False, limit=None):
             rows = rows[:limit]
         return rows
 
-    query = client.table(table).select("*")
-    if filters:
-        for k, v in filters.items():
-            query = query.eq(k, v)
-    if order_by:
-        query = query.order(order_by, desc=desc)
-    if limit:
-        query = query.limit(limit)
-    result = query.execute()
-    return result.data
+    def run(c):
+        query = c.table(table).select("*")
+        if filters:
+            for k, v in filters.items():
+                query = query.eq(k, v)
+        if order_by:
+            query = query.order(order_by, desc=desc)
+        if limit:
+            query = query.limit(limit)
+        return query.execute().data
+    return _exec(run)
 
 
 def table_insert(table, row):
@@ -108,8 +152,18 @@ def table_insert(table, row):
         _memory[table].append(row)
         return row
 
-    result = client.table(table).insert(row).execute()
-    return result.data[0] if result.data else row
+    retried = []
+
+    def run(c):
+        try:
+            result = c.table(table).insert(row).execute()
+        except Exception as e:  # noqa: BLE001
+            # A retried insert may have actually succeeded the first time (same id) -> treat duplicate as success.
+            if retried and ("23505" in str(e) or "duplicate key" in str(e).lower()):
+                return None
+            raise
+        return result.data[0] if result.data else row
+    return _exec(run, on_retry=lambda: retried.append(1)) or row
 
 
 def table_insert_many(table, rows):
@@ -126,8 +180,16 @@ def table_insert_many(table, rows):
     if client is None:
         _memory[table].extend(prepared)
         return prepared
-    result = client.table(table).insert(prepared).execute()
-    return result.data or prepared
+    retried = []
+
+    def run(c):
+        try:
+            return c.table(table).insert(prepared).execute().data
+        except Exception as e:  # noqa: BLE001
+            if retried and ("23505" in str(e) or "duplicate key" in str(e).lower()):
+                return None
+            raise
+    return _exec(run, on_retry=lambda: retried.append(1)) or prepared
 
 
 def storage_mode():
@@ -145,8 +207,10 @@ def table_update(table, row_id, updates):
                 return r
         return None
 
-    result = client.table(table).update(updates).eq("id", row_id).execute()
-    return result.data[0] if result.data else None
+    def run(c):
+        result = c.table(table).update(updates).eq("id", row_id).execute()
+        return result.data[0] if result.data else None
+    return _exec(run)
 
 
 def table_delete(table, row_id):
@@ -156,7 +220,7 @@ def table_delete(table, row_id):
         _memory[table] = [r for r in _memory[table] if r.get("id") != row_id]
         return before != len(_memory[table])
 
-    client.table(table).delete().eq("id", row_id).execute()
+    _exec(lambda c: c.table(table).delete().eq("id", row_id).execute())
     return True
 
 
@@ -168,8 +232,10 @@ def table_delete_where(table, filters):
         _memory[table] = [r for r in _memory[table] if not all(r.get(k) == v for k, v in filters.items())]
         return before - len(_memory[table])
 
-    query = client.table(table).delete()
-    for k, v in filters.items():
-        query = query.eq(k, v)
-    query.execute()
+    def run(c):
+        query = c.table(table).delete()
+        for k, v in filters.items():
+            query = query.eq(k, v)
+        return query.execute()
+    _exec(run)
     return True
