@@ -1,5 +1,6 @@
 import base64
 import hmac
+import io
 import json
 import logging
 import re
@@ -10,6 +11,7 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request, send_file
 
 import config
+import gcs_storage
 import jobs
 import pipeline
 from api.supabase_client import (table_select, table_insert, table_update, table_delete,
@@ -22,6 +24,8 @@ ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp"}
 ALLOWED_VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv"}
 LOWLIGHT_MODES = ("off", "auto", "force")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+UUID_RE = re.compile(r"^[0-9a-fA-F-]{32,36}$")
+IMAGE_CACHE_SECONDS = 86400  # media of an alert never changes, so browsers / Vercel may cache it
 
 
 class ApiError(Exception):
@@ -173,6 +177,8 @@ def system_status():
     return jsonify({
         "storage": mode,
         "storage_persistent": mode == "supabase",
+        "media_storage": "gcs" if gcs_storage.enabled() else "local_disk (lost on every Railway deploy)",
+        "gcs_probe": gcs_storage.probe() if request.args.get("probe") == "1" else None,
         "supabase_key_role": _supabase_key_role() if mode == "supabase" else None,
         "satellite": "real_gee" if gee_client.credentials_present() else "synthetic_demo_only",
         "model": detector.get_model_status(load=False),
@@ -346,14 +352,39 @@ def get_alert_detections(alert_id):
     return jsonify(table_select("detections", filters={"alert_id": alert_id}))
 
 
+def _send_bytes(data, ctype):
+    return send_file(io.BytesIO(data), mimetype=ctype, max_age=IMAGE_CACHE_SECONDS)
+
+
 def _send_image(path, what):
+    """path is either a gs:// reference (bucket) or a local file path (legacy / GCS disabled)."""
+    if gcs_storage.is_ref(path):
+        got = gcs_storage.download_ref(path)
+        if not got:
+            raise ApiError(f"{what} is not available (object missing in the storage bucket).", 404, "file_missing")
+        return _send_bytes(*got)
     if not path or not Path(path).exists():
-        raise ApiError(f"{what} is not available (file missing - on Railway, mount a Volume for EVIDENCE_DIR to keep files across deploys).", 404, "file_missing")
-    return send_file(path, mimetype="image/jpeg")
+        raise ApiError(f"{what} is not available (file missing - set GCS_BUCKET to keep images across Railway deploys).", 404, "file_missing")
+    return send_file(path, mimetype="image/jpeg", max_age=IMAGE_CACHE_SECONDS)
+
+
+def _gcs_fast_path(alert_id, kind):
+    """
+    Bucket objects have deterministic names, so the image can be fetched WITHOUT a database lookup.
+    (The old code did one Supabase query per <img>, which flooded the logs and dropped HTTP/2 connections.)
+    Returns a response, or None to fall back to the database path.
+    """
+    if not gcs_storage.enabled() or not UUID_RE.match(alert_id):
+        return None
+    got = gcs_storage.download_name(gcs_storage.blob_name(alert_id, kind))
+    return _send_bytes(*got) if got else None
 
 
 @api_bp.route("/alerts/<alert_id>/annotated.jpg", methods=["GET"])
 def get_annotated_image(alert_id):
+    fast = _gcs_fast_path(alert_id, "annotated")
+    if fast:
+        return fast
     return _send_image(_media_paths(_get_alert(alert_id)).get("annotated"), "Annotated image")
 
 
@@ -361,6 +392,9 @@ def get_annotated_image(alert_id):
 def get_alert_image(alert_id, kind):
     if kind not in ("original", "annotated", "enhanced", "comparison"):
         raise ApiError("kind must be original, annotated, enhanced or comparison", 400, "invalid_field")
+    fast = _gcs_fast_path(alert_id, kind) if kind != "original" else None  # 'original' keeps its extension -> DB lookup
+    if fast:
+        return fast
     path = _media_paths(_get_alert(alert_id)).get(kind)
     if kind == "original" and path and Path(str(path)).suffix.lower() not in ALLOWED_IMAGE_EXT:
         raise ApiError("The original upload is a video, not an image.", 404, "not_an_image")
@@ -369,11 +403,17 @@ def get_alert_image(alert_id, kind):
 
 @api_bp.route("/alerts/<alert_id>/before.jpg", methods=["GET"])
 def get_before_image(alert_id):
+    fast = _gcs_fast_path(alert_id, "before")
+    if fast:
+        return fast
     return _send_image(_get_alert(alert_id).get("before_image_url"), "Before image")
 
 
 @api_bp.route("/alerts/<alert_id>/after.jpg", methods=["GET"])
 def get_after_image(alert_id):
+    fast = _gcs_fast_path(alert_id, "after")
+    if fast:
+        return fast
     return _send_image(_get_alert(alert_id).get("after_image_url"), "After image")
 
 
@@ -381,9 +421,15 @@ def get_after_image(alert_id):
 def download_evidence(alert_id):
     a = _get_alert(alert_id)
     path = a.get("evidence_pdf_url")
+    name = f"riverguard_evidence_{alert_id}.pdf"
+    if gcs_storage.is_ref(path):
+        got = gcs_storage.download_ref(path)
+        if not got:
+            raise ApiError("Evidence PDF is missing from the storage bucket.", 404, "file_missing")
+        return send_file(io.BytesIO(got[0]), as_attachment=True, mimetype="application/pdf", download_name=name)
     if not path or not Path(path).exists():
-        raise ApiError("Evidence file missing on disk (mount a Railway Volume for EVIDENCE_DIR to keep files across deploys).", 404, "file_missing")
-    return send_file(path, as_attachment=True, mimetype="application/pdf", download_name=f"riverguard_evidence_{alert_id}.pdf")
+        raise ApiError("Evidence file missing on disk (set GCS_BUCKET to keep files across Railway deploys).", 404, "file_missing")
+    return send_file(path, as_attachment=True, mimetype="application/pdf", download_name=name)
 
 
 @api_bp.route("/alerts/<alert_id>/evidence/verify", methods=["GET"])
@@ -392,9 +438,16 @@ def verify_evidence(alert_id):
     import hashlib
     a = _get_alert(alert_id)
     path, stored = a.get("evidence_pdf_url"), a.get("evidence_sha256")
-    if not path or not Path(path).exists():
+    if gcs_storage.is_ref(path):
+        got = gcs_storage.download_ref(path)
+        if not got:
+            raise ApiError("Evidence file missing from the storage bucket.", 404, "file_missing")
+        raw = got[0]
+    elif path and Path(path).exists():
+        raw = Path(path).read_bytes()
+    else:
         raise ApiError("Evidence file missing on disk.", 404, "file_missing")
-    actual = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    actual = hashlib.sha256(raw).hexdigest()
     return jsonify({"alert_id": alert_id, "stored_sha256": stored, "recomputed_sha256": actual,
                     "match": bool(stored) and stored == actual,
                     "meaning": "A match means the file is byte-identical to what was generated. It does not prove the underlying observation is authentic."})
