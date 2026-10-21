@@ -19,6 +19,7 @@ from pathlib import Path
 
 import config
 import gcs_storage
+import jobs
 from detection import detector, zone_checker, cluster_engine, reasoning
 from alerts import pdf_generator, notifier
 from api.supabase_client import table_insert, table_insert_many, table_select, table_update
@@ -279,9 +280,33 @@ def _public_analysis(signals):
 
 
 # ── video ───────────────────────────────────────────────────────────────
+MAX_OVERLAY_BOXES = 4000
+
+
+def build_video_overlay(dets, analysis, max_boxes=MAX_OVERLAY_BOXES):
+    """
+    Compact box list per analysed frame so the web page can draw boxes on the video while it plays.
+    boxes: [x1, y1, x2, y2, class_name, confidence, track_id|None, role] in ORIGINAL video pixels.
+    Only boxes the model actually produced are included - nothing is invented or interpolated here.
+    """
+    by_t, total, truncated = {}, 0, False
+    for d in sorted(dets, key=lambda x: (x.get("timestamp_s") or 0, -x.get("confidence", 0))):
+        if total >= max_boxes:
+            truncated = True
+            break
+        x1, y1, x2, y2 = d["bbox"]
+        by_t.setdefault(d.get("timestamp_s") or 0, []).append(
+            [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1), d["class_name"], round(d["confidence"], 2),
+             d.get("track_id"), d.get("role", "evidence")])
+        total += 1
+    return {"width": analysis.get("frame_width"), "height": analysis.get("frame_height"),
+            "sample_fps": analysis.get("sample_fps"), "truncated": truncated,
+            "frames": [{"t": t, "boxes": b} for t, b in sorted(by_t.items())]}
+
+
 def process_video_upload(video_path, river=None, lat=None, lng=None, lowlight_mode="off", original_name=None):
     """Detection + tracking across sampled frames, per-frame clustering, aggregate reasoning."""
-    analysis = detector.analyze_video_file(video_path, lowlight_mode=lowlight_mode)
+    analysis = detector.analyze_video_file(video_path, lowlight_mode=lowlight_mode, progress_cb=jobs.report_progress)
     dets = analysis["detections"]
     bf = analysis["best_frame"]
     frame_w = bf["frame"].shape[1] if bf else None
@@ -304,7 +329,7 @@ def process_video_upload(video_path, river=None, lat=None, lng=None, lowlight_mo
         "object_counts": object_counts, "detection_counts": detector.summarize_counts(dets),
         "model_info": detector.get_model_info(),
         "lowlight": analysis["lowlight"],
-        "video": {k: analysis[k] for k in ("video_fps", "duration_s", "frames_analyzed", "sample_fps", "truncated", "max_seconds")},
+        "video": {k: analysis[k] for k in ("video_fps", "duration_s", "frames_analyzed", "sample_fps", "sample_fps_requested", "frame_width", "frame_height", "truncated", "max_seconds")},
         "provenance": {"source_name": original_name, "source_sha256": src_sha, "source_bytes": Path(video_path).stat().st_size,
                        "processed_at": _now().isoformat(), "pipeline": "yolo+iou-tracker+dbscan(per-frame)+rules"},
     }
@@ -339,6 +364,7 @@ def process_video_upload(video_path, river=None, lat=None, lng=None, lowlight_mo
     _persist_signals(alert, signals)
     alert["detections"] = dets[:500]
     alert["detections_total"] = len(dets)
+    alert["video_overlay"] = build_video_overlay(dets, analysis)   # response-only: lets the browser draw boxes on the playing video
     alert["object_counts"] = object_counts
     alert["track_behaviors"] = tracks
     alert["analysis"] = _public_analysis(signals)

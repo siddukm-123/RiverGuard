@@ -25,6 +25,34 @@ window.apiFetch = async function apiFetch(path, options) {
   return res;
 };
 
+/**
+ * Upload a FormData with REAL progress (fetch cannot report upload progress).
+ * onProgress(bytesSent, bytesTotal). Resolves like fetch(): a Response (ok / status / json()).
+ */
+window.apiUpload = async function apiUpload(path, formData, onProgress) {
+  const base = (window.__API_BASE__ || '').replace(/\/$/, '');
+  const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
+  const once = () => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    if (rgKey()) xhr.setRequestHeader('X-API-Key', rgKey());
+    xhr.upload.onprogress = e => { if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total); };
+    xhr.onload = () => resolve(new Response(xhr.responseText, { status: xhr.status, headers: { 'Content-Type': 'application/json' } }));
+    xhr.onerror = () => reject(new Error('The upload was interrupted (network error). Check your internet connection and try again.'));
+    xhr.ontimeout = () => reject(new Error('The upload timed out. Try again, or use a smaller / shorter video.'));
+    xhr.send(formData);
+  });
+  let res = await once();
+  if (res.status === 401) {   // same one-time access-key prompt as apiFetch
+    const key = window.prompt('This RiverGuard server requires an access key for changes. Enter it:');
+    if (key) {
+      try { sessionStorage.setItem('rgKey', key); } catch { /* private mode */ }
+      res = await once();
+    }
+  }
+  return res;
+};
+
 /** Poll /api/jobs/<id> until done. Resolves with the job result; rejects with Error(message). */
 window.pollJob = async function pollJob(jobId, onTick, intervalMs = 2000, timeoutMs = 15 * 60 * 1000) {
   const started = Date.now();

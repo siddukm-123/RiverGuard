@@ -24,6 +24,8 @@ CUSTOM_JCB_MODEL_PATH = os.getenv("CUSTOM_JCB_MODEL_PATH", "")  # optional: path
 DETECTION_CONF_THRESHOLD = float(os.getenv("DETECTION_CONF_THRESHOLD", "0.35"))
 VIDEO_SAMPLE_FPS = float(os.getenv("VIDEO_SAMPLE_FPS", "2"))  # how many frames/sec to actually run detection on for uploaded video
 
+VIDEO_MAX_ANALYZED_FRAMES = int(os.getenv("VIDEO_MAX_ANALYZED_FRAMES", "400"))  # upper bound on frames sent to YOLO per video; long videos are sampled more sparsely (0 = no cap)
+WARM_MODEL_ON_START = os.getenv("WARM_MODEL_ON_START", "true").lower() == "true"  # load YOLO in the background at boot so the first upload is not slow
 VIDEO_MAX_SECONDS = float(os.getenv("VIDEO_MAX_SECONDS", "600"))  # hard cap on analysed video duration (protects CPU/RAM on small hosts)
 # COCO 'car'/'bus' are NOT trucks. Folding them into 'truck' (old behaviour) inflates the truck signal.
 # Set FOLD_VEHICLES_AS_TRUCK=true only if you deliberately want the legacy behaviour.

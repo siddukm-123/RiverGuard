@@ -108,10 +108,36 @@ def bootstrap_scheduler():
         logging.getLogger(__name__).warning(f"Scheduler not started: {e}")
 
 
+_warm_started = False
+
+
+def _warm_model_once():
+    """
+    Loads YOLO in a background thread right after the first request of a (forked) worker, so the first video upload
+    after a deploy does not also pay the model-load time. Like the scheduler, this must never run at import time.
+    """
+    global _warm_started
+    if _warm_started or not config.WARM_MODEL_ON_START:
+        return
+    _warm_started = True
+
+    def _warm():
+        try:
+            from detection import detector
+            detector._load_models()
+            logging.getLogger(__name__).info("YOLO model warmed up.")
+        except Exception as e:  # noqa: BLE001 - a missing model is reported properly on the first real upload
+            logging.getLogger(__name__).warning(f"Model warm-up skipped: {e}")
+
+    import threading
+    threading.Thread(target=_warm, name="rg-warm-model", daemon=True).start()
+
+
 @app.before_request
 def _start_scheduler_once():
     if not _scheduler_started:
         bootstrap_scheduler()
+    _warm_model_once()
 
 
 if __name__ == "__main__":

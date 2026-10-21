@@ -364,3 +364,10 @@ a { color: inherit; }
 details.rg-details { margin-top: 12px; }
 details.rg-details > summary { cursor: pointer; font-size: 12.5px; color: var(--accent-teal); }
 @media (max-width: 760px) { .status-banner { margin: 10px 12px 0; } .rg-table { display: block; overflow-x: auto; } }
+
+/* ── upload / analysis progress bar + video with detection boxes ── */
+.rg-progress { display:inline-block; width:160px; height:8px; border-radius:4px; background:var(--panel-raised); border:1px solid var(--border); vertical-align:middle; margin-right:8px; overflow:hidden; }
+.rg-progress > span { display:block; height:100%; background:var(--accent-teal); transition: width .25s ease; }
+.rg-vwrap { position:relative; margin-top:12px; }
+.rg-vwrap video { width:100%; max-height:480px; display:block; background:#000; border-radius:var(--radius); border:1px solid var(--border); object-fit:contain; }
+.rg-vwrap canvas { position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none; }

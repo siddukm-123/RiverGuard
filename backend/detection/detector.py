@@ -301,9 +301,13 @@ def analyze_image_file(image_path, conf_threshold=None, lowlight_mode="off"):
     return res
 
 
-def analyze_video_file(video_path, sample_fps=None, conf_threshold=None, lowlight_mode="off"):
+def analyze_video_file(video_path, sample_fps=None, conf_threshold=None, lowlight_mode="off", progress_cb=None):
     """
     Frame-sampled detection + tracking over a video.
+
+    progress_cb(fraction 0..1) is called after every analysed frame (used to show a progress bar).
+    The sampling rate is lowered automatically for long videos so at most config.VIDEO_MAX_ANALYZED_FRAMES
+    frames are analysed (reported back as sample_fps / sample_fps_requested).
 
     Returns dict with: detections (all frames, with frame_number + timestamp_s + track_id),
     track_summaries, video_fps, duration_s, frames_analyzed, truncated, best_frame
@@ -326,6 +330,12 @@ def analyze_video_file(video_path, sample_fps=None, conf_threshold=None, lowligh
         video_fps = 25.0
     frame_interval = max(1, int(round(video_fps / sample_fps)))
     max_frames = int(config.VIDEO_MAX_SECONDS * video_fps)
+    requested_fps = round(video_fps / frame_interval, 3)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)  # may be 0/unreliable for some containers
+    limit_frames = min(total_frames, max_frames) if total_frames > 0 else max_frames
+    cap_n = config.VIDEO_MAX_ANALYZED_FRAMES
+    if cap_n and limit_frames // frame_interval > cap_n:
+        frame_interval = max(frame_interval, -(-limit_frames // cap_n))  # ceil: never analyse more than cap_n frames
 
     tracker = SimpleTracker()
     all_dets = []
@@ -365,6 +375,11 @@ def analyze_video_file(video_path, sample_fps=None, conf_threshold=None, lowligh
                 score = (len(evidence), sum(d["confidence"] for d in evidence))
                 if best is None or score > best[0]:
                     best = (score, frame_idx, frame.copy(), [dict(d) for d in dets], res["enhanced_frame"])
+                if progress_cb and limit_frames > 0:
+                    try:
+                        progress_cb(min(0.99, frame_idx / limit_frames))
+                    except Exception:  # noqa: BLE001 - progress is cosmetic, never fail the analysis
+                        pass
         frame_idx += 1
 
     cap.release()
@@ -378,7 +393,10 @@ def analyze_video_file(video_path, sample_fps=None, conf_threshold=None, lowligh
         "video_fps": round(video_fps, 2),
         "duration_s": round(frame_idx / video_fps, 1),
         "frames_analyzed": analyzed,
-        "sample_fps": sample_fps,
+        "sample_fps": round(video_fps / frame_interval, 3),   # what was actually used (may be lower than requested)
+        "sample_fps_requested": requested_fps,
+        "frame_width": frame_wh[0] if frame_wh else None,
+        "frame_height": frame_wh[1] if frame_wh else None,
         "truncated": truncated,
         "max_seconds": config.VIDEO_MAX_SECONDS,
         "best_frame": None if best is None else {
@@ -427,6 +445,18 @@ def draw_detections(frame, detections, title=None):
         cv2.putText(out, title, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
         cv2.putText(out, title, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 1)
     return out
+
+
+def probe():
+    """Loads the weights (if needed) and runs ONE real inference on a blank frame. Returns {ok, error, seconds}; never raises."""
+    import time
+    import numpy as np
+    t = time.time()
+    try:
+        detect_frame(np.full((96, 128, 3), 127, np.uint8), 0.99)
+        return {"ok": True, "seconds": round(time.time() - t, 2)}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{e.__class__.__name__}: {str(e)[:300]}", "seconds": round(time.time() - t, 2)}
 
 
 def summarize_counts(detections):

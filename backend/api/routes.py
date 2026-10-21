@@ -63,8 +63,10 @@ def _mna(e):
 
 @api_bp.errorhandler(Exception)
 def _unhandled(e):
-    logger.exception("Unhandled API error")
-    return _err("Internal server error", 500, "internal_error")
+    ref = uuid.uuid4().hex[:8]
+    logger.exception(f"Unhandled API error [ref {ref}] {request.method} {request.path}")
+    # Short, secret-free reason so the page (and you) can see WHAT failed; the full traceback is in the server log under this ref.
+    return _err("Internal server error", 500, "internal_error", ref=ref, detail=f"{e.__class__.__name__}: {str(e)[:200]}")
 
 
 @api_bp.before_request
@@ -167,6 +169,17 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
+def _library_versions():
+    from importlib import metadata
+    out = {}
+    for pkg in ("torch", "torchvision", "ultralytics", "numpy", "opencv-python-headless", "google-cloud-storage"):
+        try:
+            out[pkg] = metadata.version(pkg)
+        except Exception:  # noqa: BLE001
+            out[pkg] = None
+    return out
+
+
 @api_bp.route("/system-status", methods=["GET"])
 def system_status():
     """What is real, what is demo, what is unconfigured - so the UI never has to guess."""
@@ -182,6 +195,8 @@ def system_status():
         "supabase_key_role": _supabase_key_role() if mode == "supabase" else None,
         "satellite": "real_gee" if gee_client.credentials_present() else "synthetic_demo_only",
         "model": detector.get_model_status(load=False),
+        "model_probe": detector.probe() if request.args.get("probe") == "1" else None,
+        "libraries": _library_versions(),
         "notifications": notifier.configuration_status(),
         "reasoning_llm_configured": bool(config.ANTHROPIC_API_KEY),
         "write_protection": bool(config.RIVERGUARD_API_KEY),
@@ -202,7 +217,7 @@ def get_job(job_id):
     j = jobs.get(job_id)
     if not j:
         return _err("Job not found (it expired, or the server restarted while it was running).", 404, "job_not_found")
-    body = {"id": j["id"], "kind": j["kind"], "status": j["status"], "error": j["error"]}
+    body = {"id": j["id"], "kind": j["kind"], "status": j["status"], "error": j["error"], "progress": j.get("progress", 0.0)}
     if j["status"] == "done":
         body["result"] = j["result"]
     return jsonify(body)
@@ -487,6 +502,16 @@ def _looks_like(path, ext):
     return False
 
 
+def _track_upload(upload_id, fields):
+    """Updates the 'uploads' log row. Bookkeeping only: a failure here is logged but must never fail or mask the detection."""
+    if not upload_id:
+        return
+    try:
+        table_update("uploads", upload_id, fields)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not update uploads row {upload_id}: {e.__class__.__name__}: {e}")
+
+
 def _run_upload(save_path, is_image, river, lat, lng, lowlight_mode, original_name, upload_id):
     """Executed inline or in a job. Raises ApiError with the right status for bad media / missing model."""
     from detection.detector import ModelUnavailableError
@@ -496,17 +521,17 @@ def _run_upload(save_path, is_image, river, lat, lng, lowlight_mode, original_na
         else:
             alert = pipeline.process_video_upload(save_path, river=river, lat=lat, lng=lng, lowlight_mode=lowlight_mode, original_name=original_name)
     except ValueError as e:
-        table_update("uploads", upload_id, {"status": "failed", "error_message": str(e)[:500]})
+        _track_upload(upload_id, {"status": "failed", "error_message": str(e)[:500]})
         raise ApiError(str(e), 422, "invalid_media")
     except ModelUnavailableError as e:
-        table_update("uploads", upload_id, {"status": "failed", "error_message": str(e)[:500]})
+        _track_upload(upload_id, {"status": "failed", "error_message": str(e)[:500]})
         raise ApiError(f"Detection model is unavailable: {e}", 503, "model_unavailable")
     except Exception as e:
         logger.exception("Detection pipeline failed")
-        table_update("uploads", upload_id, {"status": "failed", "error_message": str(e)[:500]})
-        raise ApiError(f"Detection failed: {e}", 500, "pipeline_error")
-    table_update("uploads", upload_id, {"status": "done", "result_alert_id": alert["id"]})
-    return _public_alert(alert) | {k: alert[k] for k in ("detections", "object_counts", "analysis") if k in alert} | (
+        _track_upload(upload_id, {"status": "failed", "error_message": str(e)[:500]})
+        raise ApiError(f"Detection failed: {e.__class__.__name__}: {str(e)[:300]}", 500, "pipeline_error")
+    _track_upload(upload_id, {"status": "done", "result_alert_id": alert["id"]})
+    return _public_alert(alert) | {k: alert[k] for k in ("detections", "object_counts", "analysis", "video_overlay") if k in alert} | (
         {"track_behaviors": alert["track_behaviors"], "detections_total": alert["detections_total"]} if "track_behaviors" in alert else {})
 
 
@@ -550,9 +575,14 @@ def upload_and_detect():
         save_path.unlink(missing_ok=True)
         raise ApiError(f"The file content does not look like a valid {ext} file.", 422, "invalid_media")
 
-    upload_row = table_insert("uploads", {"original_name": file.filename[:255], "file_type": "image" if is_image else "video",
-                                          "storage_path": str(save_path), "status": "processing"})
-    args = (save_path, is_image, river, lat, lng, lowlight_mode, file.filename, upload_row["id"])
+    try:
+        upload_row = table_insert("uploads", {"original_name": file.filename[:255], "file_type": "image" if is_image else "video",
+                                              "storage_path": str(save_path), "status": "processing"})
+        upload_id = upload_row["id"]
+    except Exception as e:  # noqa: BLE001 - the log row is optional; detection still runs
+        logger.warning(f"Could not create uploads row: {e.__class__.__name__}: {e}")
+        upload_id = None
+    args = (save_path, is_image, river, lat, lng, lowlight_mode, file.filename, upload_id)
     if request.form.get("async") in ("1", "true"):
         return jsonify({"job_id": jobs.submit("upload", _run_upload, *args), "status": "queued"}), 202
     return jsonify(_run_upload(*args)), 201

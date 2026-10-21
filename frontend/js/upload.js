@@ -93,7 +93,7 @@ submitBtn.addEventListener('click', async () => {
   const isVideo = VIDEO_EXT.includes(extOf(selectedFile.name));
   submitBtn.disabled = true;
   resultArea.innerHTML = '';
-  statusText.innerHTML = `<span class="spinner"></span> ${isVideo ? 'Uploading and queuing video analysis…' : 'Running detection…'}`;
+  statusText.innerHTML = `<span class="spinner"></span> ${isVideo ? 'Starting upload…' : 'Uploading…'}`;
 
   const fd = new FormData();
   fd.append('file', selectedFile);
@@ -112,13 +112,31 @@ submitBtn.addEventListener('click', async () => {
   }
   if (isVideo) fd.append('async', '1');
 
+  const t0 = Date.now();
+  const mb = n => (n / 1048576).toFixed(1);
+  const bar = pct => `<span class="rg-progress"><span style="width:${pct}%"></span></span>`;
+  const onUpload = (sent, total) => {
+    const pct = Math.min(100, Math.round(sent / total * 100));
+    const speed = sent / 1048576 / Math.max(0.5, (Date.now() - t0) / 1000);
+    statusText.innerHTML = pct >= 100
+      ? `<span class="spinner"></span> Upload complete — saving the file and ${isVideo ? 'queuing the analysis' : 'running detection'}…`
+      : `${bar(pct)} Uploading ${pct}% · ${mb(sent)} of ${mb(total)} MB · ${speed.toFixed(1)} MB/s`;
+  };
+
   try {
-    const res = await apiFetch('/api/upload', { method: 'POST', body: fd });
+    const res = await apiUpload('/api/upload', fd, onUpload);
     let data = await res.json().catch(() => ({}));
-    if (!res.ok && res.status !== 202) throw new Error(data.error || `Request failed (${res.status})`);
+    if (!res.ok && res.status !== 202) {
+      const why = [data.error || `Request failed (${res.status})`, data.detail && data.detail !== data.error ? `— ${data.detail}` : '', data.ref ? `(ref ${data.ref})` : '']
+        .filter(Boolean).join(' ');
+      throw new Error(why);
+    }
     if (res.status === 202) {
       data = await pollJob(data.job_id, (job, secs) => {
-        statusText.innerHTML = `<span class="spinner"></span> Analysing video… ${secs}s (${esc(job.status)})`;
+        const pct = Math.round((job.progress || 0) * 100);
+        statusText.innerHTML = job.status === 'queued'
+          ? `<span class="spinner"></span> Waiting for the analyser to start… ${secs}s`
+          : `${bar(pct)} Analysing video ${pct}% · ${secs}s`;
       });
     }
     renderResult(data);
@@ -210,6 +228,13 @@ function renderResult(a) {
     ${mi.excavator_detection_available === false ? '<div class="rg-warn">Excavator/JCB detection is <strong>not available</strong> with the loaded model, so excavators will not appear here even if present.</div>' : ''}
     ${(a.warnings || []).map(w => `<div class="rg-warn">${esc(w)}</div>`).join('')}
 
+    ${isVideo && a.video_overlay && a.video_overlay.frames && a.video_overlay.frames.length && previewUrl ? `
+      <div class="section-title">Video with detection boxes</div>
+      <div class="rg-vwrap"><video id="rg-video" src="${previewUrl}" controls muted playsinline></video><canvas id="rg-overlay"></canvas></div>
+      <div class="rg-note">Press play. <span style="color:#E4572E">■ truck / excavator</span> · <span style="color:#4FD1C5">■ person</span> · <span style="color:#9FB0B3">▢ car / bus (context only, dashed)</span>.
+        Boxes are drawn from the frames the model analysed (${esc((a.video_overlay.sample_fps || '?'))} per second); between those frames a tracked box is moved smoothly, nothing extra is detected.
+        ${a.video_overlay.truncated ? 'Box list was capped, so the end of a very long video may have no boxes.' : ''}</div>` : ''}
+
     ${tabs.length ? `<div class="rg-tabs" id="img-tabs">${tabs.map((t, i) => `<button class="btn ${i === 0 ? 'active' : ''}" data-kind="${t[0]}">${esc(t[1])}</button>`).join('')}</div>
       <img class="result-image" id="result-img" src="${imgSrc(tabs[0][0])}" alt="Detection result image">` : ''}
 
@@ -238,6 +263,12 @@ function renderResult(a) {
       ${a.evidence_pdf_url ? `<a href="/api/alerts/${encodeURIComponent(a.id)}/evidence.pdf" target="_blank" rel="noopener" class="btn primary" style="text-decoration:none; display:inline-block;">Download evidence PDF</a>
       <a href="/api/alerts/${encodeURIComponent(a.id)}/evidence/verify" target="_blank" rel="noopener" class="btn" style="text-decoration:none; display:inline-block;">Verify PDF hash</a>` : '<span class="meta">Evidence PDF was not generated.</span>'}
     </div>`;
+
+  const vEl = document.getElementById('rg-video'), cEl = document.getElementById('rg-overlay');
+  if (vEl && cEl && window.RGOverlay) {
+    previewArea.innerHTML = '';   // the result player below replaces the plain preview (same file, same blob URL)
+    window.RGOverlay.attach(vEl, cEl, a.video_overlay);
+  }
 
   const tabsEl = document.getElementById('img-tabs');
   if (tabsEl) {
