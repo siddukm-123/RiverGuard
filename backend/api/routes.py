@@ -476,6 +476,7 @@ def get_metrics():
     return jsonify({
         "total_alerts": len(alerts), "high_severity": sev("HIGH"), "watch_severity": sev("WATCH"),
         "rivers_monitored": len(rivers),
+        "rivers_scanned": len([r for r in rivers if r.get("last_scanned_at")]),  # rivers with at least one completed satellite scan
         "manual_uploads": len([a for a in alerts if a.get("source") == "manual_upload"]),
         "satellite_scans": len([a for a in alerts if a.get("source") == "satellite"]),
         "storage": storage_mode(),
