@@ -255,7 +255,14 @@ async function loadMetrics() {
   document.getElementById('m-rivers').textContent = m.rivers_monitored;
   document.getElementById('m-high').textContent = m.high_severity;
   document.getElementById('m-watch').textContent = m.watch_severity;
-  document.getElementById('m-total').textContent = m.total_alerts;
+  let scanned = m.rivers_scanned;
+  if (scanned === undefined) {   // backend not updated yet: count from the river list (same "last scan" the list shows)
+    try {
+      const rr = await apiFetch('/api/rivers');
+      scanned = (await rr.json()).filter(r => r.last_scanned_at).length;
+    } catch { scanned = '—'; }
+  }
+  document.getElementById('m-scanned').textContent = scanned;
 }
 
 async function loadAlerts() {
