@@ -94,6 +94,12 @@ async function loadRivers() {
 function renderRiversList(rivers) {
   const el = document.getElementById('rivers-list');
   if (!el) return;
+  const demoBtn = document.getElementById('demo-btn');
+  if (demoBtn) {
+    const hasDemo = rivers.some(isTestRiver);
+    demoBtn.dataset.has = hasDemo ? '1' : '0';
+    demoBtn.textContent = hasDemo ? '✕ Remove test data' : '＋ Add test river';
+  }
   if (rivers.length === 0) {
     el.innerHTML = '<div class="empty-state">No rivers added yet — search above.</div>';
     return;
@@ -103,17 +109,17 @@ function renderRiversList(rivers) {
     const enabled = r.monitoring_enabled !== false;
     const points = r.monitor_points ? r.monitor_points.length : 0;
     return `
-      <div class="alert-item" style="display:flex; align-items:center; justify-content:space-between; cursor:default;">
-        <div>
-          <strong>${escapeHtml(r.name)}</strong>
+      <div class="alert-item rv-row">
+        <div class="rv-info">
+          <strong>${escapeHtml(r.name)}</strong>${isTestRiver(r) ? '<span class="test-badge">TEST</span>' : ''}
           <div class="meta">${escapeHtml(r.district || r.state || '')}${points ? ` · ${points} corridor points` : ''} · scans every ${r.scan_interval_days || 5}d · last scan: ${lastScan}</div>
         </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-shrink:0;">
-          <button class="btn" onclick="focusRiver('${r.id}')" style="padding:6px 10px; font-size:12px;">Show</button>
-          <a href="/details" class="btn" style="padding:6px 10px; font-size:12px; text-decoration:none;" onclick="sessionStorage.setItem('openRiver','${r.id}')">Details</a>
-          <button class="btn" onclick="triggerScanNow('${r.id}', this)" style="padding:6px 10px; font-size:12px;">Scan now</button>
-          <button class="btn ${enabled ? 'primary' : ''}" onclick="toggleMonitoring('${r.id}', ${!enabled})" style="padding:6px 10px; font-size:12px;">${enabled ? 'Monitoring ON' : 'Monitoring OFF'}</button>
-          <button class="btn danger" onclick="deleteRiver('${r.id}')" style="padding:6px 10px; font-size:12px;">Delete</button>
+        <div class="rv-actions">
+          <button class="btn" onclick="focusRiver('${r.id}')">Show</button>
+          <a href="/details" class="btn" onclick="sessionStorage.setItem('openRiver','${r.id}')">Details</a>
+          <button class="btn" onclick="triggerScanNow('${r.id}', this)">Scan now</button>
+          <button class="btn ${enabled ? 'primary' : ''}" onclick="toggleMonitoring('${r.id}', ${!enabled})">${enabled ? 'Monitoring ON' : 'Monitoring OFF'}</button>
+          <button class="btn danger" onclick="deleteRiver('${r.id}')">Delete</button>
         </div>
       </div>
     `;
@@ -281,11 +287,13 @@ async function loadAlerts() {
     const signals = parseSignals(a);
     const isReal = a.source === 'satellite' && signals.synthetic_data === false;
     const isDemo = a.source === 'satellite' && signals.synthetic_data === true;
-    const dataLabel = isReal ? `✓ real Sentinel-2: ${escapeHtml(signals.before_date || '?')} → ${escapeHtml(signals.after_date || '?')}` : (isDemo ? '⚠ SYNTHETIC demo data — not a real observation (GEE not connected)' : '');
+    const isTest = signals.demo_test === true;
+    const dataLabel = isTest ? '🧪 TEST DATA — simulated alert for demonstration, not a real detection'
+      : isReal ? `✓ real Sentinel-2: ${escapeHtml(signals.before_date || '?')} → ${escapeHtml(signals.after_date || '?')}` : (isDemo ? '⚠ SYNTHETIC demo data — not a real observation (GEE not connected)' : '');
     const corridorInfo = signals.corridor_points_scanned ? ` · ${signals.corridor_points_scanned} corridor points scanned` : '';
     return `
     <div class="alert-item" onclick="focusAlert(${a.lat}, ${a.lng})">
-      <span class="severity-badge ${a.severity}">${a.severity}</span>
+      <span class="severity-badge ${a.severity}">${a.severity}</span>${isTest ? '<span class="test-badge">TEST</span>' : ''}
       <span style="font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); margin-left: 8px;">risk ${(a.confidence || 0).toFixed(0)}/100</span>
       <div class="meta">${a.source === 'satellite' ? '🛰 satellite' : '📹 manual upload'} · ${timeAgo(a.detected_at)}${corridorInfo}</div>
       ${dataLabel ? `<div class="meta" style="color:${isReal ? 'var(--accent-teal)' : 'var(--accent-watch)'};">${dataLabel}</div>` : ''}
@@ -306,7 +314,7 @@ async function loadAlerts() {
     if (a.lat == null || a.lng == null) return;
     const signals = parseSignals(a);
     const color = severityColor[a.severity] || '#7E9296';
-    const popup = `<strong>${a.severity}</strong> (risk ${(a.confidence || 0).toFixed(0)}/100)<br>${escapeHtml(a.reasoning_text || '')}`;
+    const popup = `<strong>${signals.demo_test === true ? '🧪 TEST · ' : ''}${a.severity}</strong> (risk ${(a.confidence || 0).toFixed(0)}/100)<br>${escapeHtml(a.reasoning_text || '')}`;
 
     // Red / yellow bordered zone boxes on the map (not filled solid)
     if (a.severity === 'HIGH') {
@@ -358,12 +366,69 @@ async function loadSystemStatus() {
     const notes = [];
     if (!st.storage_persistent) notes.push('⚠ In-memory storage: data is lost on restart (Supabase not connected).');
     if (st.satellite !== 'real_gee') notes.push('⚠ Satellite results are SYNTHETIC demo values (Google Earth Engine not configured).');
-    if (st.model && !st.model.excavator_detection_available) notes.push('ℹ Excavator/JCB detection is not available with the loaded model (trucks and people only).');
     if (!st.write_protection) notes.push('ℹ Write protection is off (RIVERGUARD_API_KEY not set).');
     el.style.display = notes.length ? 'block' : 'none';
     el.innerHTML = notes.map(escapeHtml).join('<br>');
   } catch { el.style.display = 'none'; }
 }
+
+// ── Test river ("demo") helpers ─────────────────────────────────────
+function isTestRiver(r) { return /\(Test\)\s*$/.test(String((r && r.name) || '')); }
+
+async function toggleDemoData() {
+  const btn = document.getElementById('demo-btn');
+  const hasDemo = btn.dataset.has === '1';
+  if (hasDemo && !confirm('Remove the TEST river and its simulated alert?\n\nReal rivers and real alerts are not touched.')) return;
+  btn.disabled = true;
+  try {
+    if (hasDemo) {
+      const res = await apiFetch('/api/demo', { method: 'DELETE' });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); alert(d.error || 'Could not remove test data.'); return; }
+    } else {
+      btn.textContent = 'Mapping the real river…';
+      const res = await apiFetch('/api/demo/seed', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(data.error || 'Could not add test data.'); return; }
+      await loadRivers();
+      await refreshAll();
+      if (data.alert && data.alert.lat != null) map.flyTo([data.alert.lat, data.alert.lng], 13, { duration: 0.8 });
+      return;
+    }
+    await loadRivers();
+    await refreshAll();
+  } catch (e) {
+    alert(e.message || 'Test data request failed.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = btn.dataset.has === '1' ? '✕ Remove test data' : '＋ Add test river';
+  }
+}
+document.getElementById('demo-btn').addEventListener('click', toggleDemoData);
+
+// ── Full-screen map ─────────────────────────────────────────────────
+const mapPanel = document.getElementById('map-panel');
+const fsBtn = document.getElementById('map-fs-btn');
+
+function setMapFull(on) {
+  mapPanel.classList.toggle('map-fullscreen', on);
+  document.body.classList.toggle('no-scroll', on);
+  fsBtn.textContent = on ? '✕ Exit full screen' : '⤢ Full screen';
+  fsBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  [60, 300].forEach(ms => setTimeout(() => map.invalidateSize(), ms));   // let the browser finish resizing, then redraw tiles
+}
+
+fsBtn.addEventListener('click', () => {
+  const on = !mapPanel.classList.contains('map-fullscreen');
+  setMapFull(on);                                                       // CSS full-screen works everywhere (incl. iPhone Safari)
+  if (on && mapPanel.requestFullscreen) mapPanel.requestFullscreen().catch(() => {});   // plus real browser full screen where supported
+  if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+});
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && mapPanel.classList.contains('map-fullscreen')) setMapFull(false);
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && mapPanel.classList.contains('map-fullscreen')) setMapFull(false);
+});
 
 loadSystemStatus();
 loadRivers();

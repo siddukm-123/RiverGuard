@@ -32,33 +32,39 @@
     <div class="panel" style="margin-bottom: 18px;">
       <div class="panel-header"><h2>Add a river to monitor</h2></div>
       <div style="padding: 16px 18px;">
-        <div style="display:flex; gap:10px;">
-          <input type="text" id="river-search-input" placeholder="Search a river, e.g. 'Tungabhadra river Davangere'" style="flex:1; padding:9px 12px; background:var(--panel-raised); border:1px solid var(--border); border-radius:7px; color:var(--text); font-size:13.5px;">
+        <div class="search-row">
+          <input type="text" id="river-search-input" class="search-input" placeholder="Search a river, e.g. 'Tungabhadra river Davangere'">
           <button class="btn primary" id="river-search-btn">Search</button>
         </div>
         <div id="river-search-results" style="margin-top: 10px;"></div>
       </div>
     </div>
 
-    <div class="panel map-scan">
+    <div class="panel map-scan" id="map-panel">
       <div class="panel-header">
         <h2>River watch map</h2>
-        <div style="display:flex; gap:14px; align-items:center; font-family:var(--font-mono); font-size:10.5px; color:var(--text-muted);">
-          <span><span style="display:inline-block;width:14px;height:14px;border:2px solid #E4572E;border-radius:2px;vertical-align:middle;margin-right:4px;"></span> HIGH alert</span>
-          <span><span style="display:inline-block;width:14px;height:14px;border:2px dashed #D9A441;border-radius:2px;vertical-align:middle;margin-right:4px;"></span> WATCH / low conf</span>
-          <span style="color:var(--accent-teal);">live</span>
+        <div class="map-tools">
+          <div class="map-legend">
+            <span><span class="lg-box" style="border:2px solid #E4572E;"></span> HIGH alert</span>
+            <span><span class="lg-box" style="border:2px dashed #D9A441;"></span> WATCH / low conf</span>
+            <span style="color:var(--accent-teal);">live</span>
+          </div>
+          <button class="btn map-fs-btn" id="map-fs-btn" type="button" aria-pressed="false">⤢ Full screen</button>
         </div>
       </div>
       <div id="map"></div>
     </div>
 
     <div class="panel" style="margin-top: 18px;">
-      <div class="panel-header"><h2>Monitored rivers</h2></div>
+      <div class="panel-header">
+        <h2>Monitored rivers</h2>
+        <button class="btn" id="demo-btn" type="button" style="padding:6px 10px; font-size:12px;" title="Adds a clearly-labelled TEST river with a simulated HIGH alert, for demonstrations">＋ Add test river</button>
+      </div>
       <div id="rivers-list" style="padding: 4px 0;"></div>
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel feed-panel">
     <div class="panel-header">
       <h2>Alert feed</h2>
     </div>

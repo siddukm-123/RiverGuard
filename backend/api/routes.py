@@ -11,6 +11,7 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request, send_file
 
 import config
+import demo_data
 import gcs_storage
 import jobs
 import pipeline
@@ -280,6 +281,23 @@ def create_river():
             logger.exception("Failed to insert river")
             raise ApiError(f"Database error: {e}", 500, "db_error")
     return jsonify(river), 201
+
+
+@api_bp.route("/demo/seed", methods=["POST"])
+def seed_demo_data():
+    """Adds the clearly-labelled TEST river + HIGH alert (see demo_data.py). Idempotent."""
+    from satellite.river_corridor import snap_to_river_center
+    try:
+        out = demo_data.seed(snap_to_river_center, _build_buffer, config.DEFAULT_BUFFER_RADIUS_M)
+    except demo_data.DemoSeedError as e:
+        raise ApiError(str(e), 503, "demo_unavailable")
+    return jsonify(out), (201 if out["created"] else 200)
+
+
+@api_bp.route("/demo", methods=["DELETE"])
+def remove_demo_data():
+    """Removes the TEST river(s) and their alerts. Real rivers are never touched."""
+    return jsonify(demo_data.remove())
 
 
 @api_bp.route("/rivers/<river_id>", methods=["DELETE"])

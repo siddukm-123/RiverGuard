@@ -20,6 +20,9 @@ RETRY_AFTER_NO_DATA_HOURS = 12
 
 
 def _due_for_scan(river):
+    import demo_data
+    if demo_data.is_demo_river(river):
+        return False  # TEST river: never scanned automatically (its alert is simulated, see demo_data.py)
     if not river.get("monitoring_enabled", True):
         return False
     interval_days = river.get("scan_interval_days") or 5

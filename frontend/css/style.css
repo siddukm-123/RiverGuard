@@ -156,7 +156,7 @@ a { color: inherit; }
 
 /* ── Map ─────────────────────────────────────────────────────────── */
 #map {
-  height: 560px;
+  height: clamp(380px, 64vh, 760px);
   width: 100%;
   background: #0d1a1d;
 }
@@ -184,7 +184,7 @@ a { color: inherit; }
 }
 
 /* ── Alert feed ──────────────────────────────────────────────────── */
-.alert-feed { max-height: 640px; overflow-y: auto; }
+.alert-feed { max-height: 640px; overflow-y: auto; }   /* fallback; the dashboard feed panel overrides this (see .feed-panel) */
 
 .alert-item {
   padding: 14px 18px;
@@ -371,3 +371,74 @@ details.rg-details > summary { cursor: pointer; font-size: 12.5px; color: var(--
 .rg-vwrap { position:relative; margin-top:12px; }
 .rg-vwrap video { width:100%; max-height:480px; display:block; background:#000; border-radius:var(--radius); border:1px solid var(--border); object-fit:contain; }
 .rg-vwrap canvas { position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Dashboard layout fixes, full-screen map, mobile responsiveness
+   ═══════════════════════════════════════════════════════════════════ */
+.layout > * { min-width: 0; }                               /* grid children may shrink (wide tables / button rows used to overflow) */
+body.no-scroll { overflow: hidden; }
+
+/* Alert feed: fills the full height of the window next to the left column and scrolls inside */
+.feed-panel { display: flex; flex-direction: column; align-self: start; position: sticky; top: 78px; height: calc(100vh - 98px); min-height: 460px; }
+.feed-panel .alert-feed { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.alert-item .reasoning { overflow-wrap: anywhere; }
+.alert-item img { max-width: 100%; height: auto; }
+
+/* Search row */
+.search-row { display: flex; gap: 10px; }
+.search-input { flex: 1; min-width: 0; padding: 9px 12px; background: var(--panel-raised); border: 1px solid var(--border); border-radius: 7px; color: var(--text); font-size: 13.5px; }
+
+/* Map header + legend + full-screen button */
+.map-scan .panel-header { flex-wrap: wrap; gap: 10px; }
+.map-tools { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.map-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
+.map-legend .lg-box { display: inline-block; width: 14px; height: 14px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+.map-fs-btn { padding: 6px 12px; font-size: 12px; white-space: nowrap; }
+.panel.map-fullscreen { position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100vw; height: 100vh; height: 100dvh; z-index: 3000; border: 0; border-radius: 0; display: flex; flex-direction: column; background: var(--panel); }
+.panel.map-fullscreen #map { flex: 1 1 auto; height: auto; min-height: 0; }
+.panel.map-fullscreen::after { display: none; }              /* hide the decorative scan line */
+.panel.map-fullscreen .panel-header { padding: 10px 14px; }
+
+/* TEST data badge */
+.test-badge { display: inline-block; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em; padding: 2px 6px; margin-left: 8px; border: 1px dashed var(--accent-watch); color: var(--accent-watch); border-radius: 4px; vertical-align: middle; }
+
+/* Monitored-rivers rows */
+.rv-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: default; }
+.rv-row:hover { background: transparent; }
+.rv-info { min-width: 0; }
+.rv-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; flex-shrink: 0; }
+.rv-actions .btn { padding: 6px 10px; font-size: 12px; text-decoration: none; display: inline-block; }
+
+/* Detect page: two columns on desktop (was an inline style, which phones could not override) */
+.detect-layout { grid-template-columns: 1fr 420px; }
+
+/* ── Tablet / phone ─────────────────────────────────────────────── */
+@media (max-width: 980px) {
+  .layout { grid-template-columns: 1fr; padding: 14px 14px 32px; gap: 14px; }
+  .detect-layout { grid-template-columns: 1fr; }
+  .feed-panel { position: static; height: auto; min-height: 0; }
+  .feed-panel .alert-feed { max-height: 78vh; }
+}
+@media (max-width: 700px) {
+  .topbar { padding: 10px 12px; flex-wrap: wrap; gap: 8px; }
+  .brand { font-size: 17px; }
+  .nav-links { width: 100%; gap: 4px; overflow-x: auto; }
+  .nav-links a { padding: 7px 11px; font-size: 13px; white-space: nowrap; }
+  .layout { padding: 12px 10px 28px; }
+  .metric-row { gap: 8px; }
+  .metric-card { padding: 12px 14px; }
+  .metric-card .value { font-size: 24px; }
+  .panel-header { padding: 12px 14px; }
+  #map { height: 58vh; min-height: 320px; }
+  .map-tools { width: 100%; justify-content: space-between; }
+  .rv-row { flex-direction: column; align-items: stretch; }
+  .rv-actions { justify-content: flex-start; }
+  .alert-item { padding: 12px 14px; }
+  .upload-zone { padding: 30px 14px; }
+  .rg-progress { width: 110px; }
+  .status-banner { margin: 10px 10px 0; }
+}
+@media (max-width: 520px) {
+  .search-row { flex-direction: column; }
+  .search-row .btn { width: 100%; }
+}
