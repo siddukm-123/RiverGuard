@@ -37,7 +37,7 @@ async function loadRiverList() {
       <div class="river-row">
         <div>
           <strong>${escapeHtml(r.name)}</strong>
-          <div class="meta">${escapeHtml(r.district || r.state || '')} · ${pts} on-river bed points · last scan: ${last}</div>
+          <div class="meta">${r.area_kind === 'live_area' ? '📍 ' + escapeHtml(r.place_name || '') + (r.radius_km ? ' · radius ' + r.radius_km + ' km' : '') + ' · ' : escapeHtml(r.district || r.state || '') + ' · '}${pts} on-river bed points · last scan: ${last}</div>
         </div>
         <div style="display:flex; gap:8px;">
           <button class="btn" onclick="refreshCorridor('${r.id}', this)">Fix corridor</button>

@@ -80,6 +80,14 @@ def generate_evidence_pdf(alert, river_name, detections=None, image_paths=None, 
     pdf.add_page()
 
     is_sat = alert.get("source") == "satellite"
+    if extra.get("demo_test"):
+        pdf.set_fill_color(255, 230, 200)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.set_text_color(160, 60, 0)
+        pdf.multi_cell(0, 7, "TEST ALERT - SIMULATED FOR DEMONSTRATION. NOT A REAL DETECTION. "
+                             "THE IMAGE IN THIS DOCUMENT IS A GENERATED ILLUSTRATION, NOT A PHOTOGRAPH.", fill=True, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(2)
     synthetic = bool(extra.get("synthetic_data"))
     if synthetic:
         pdf.set_fill_color(255, 230, 200)

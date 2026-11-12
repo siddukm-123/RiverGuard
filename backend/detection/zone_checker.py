@@ -53,8 +53,27 @@ def build_buffer_polygon(centerline_coords, radius_m=1000.0):
 
 
 def buffer_from_monitor_points(monitor_points, radius_m=1000.0):
-    pts = [[p["lng"], p["lat"]] for p in (monitor_points or []) if p.get("lat") is not None and p.get("lng") is not None]
-    return build_buffer_polygon(pts, radius_m)
+    """One river -> one buffer. A live area can hold several rivers (points carry a 'river' name): each river is buffered on
+    its own and the results are merged, so two different rivers are never joined by a made-up line between them."""
+    valid = [p for p in (monitor_points or []) if p.get("lat") is not None and p.get("lng") is not None]
+    groups = {}
+    for p in valid:
+        groups.setdefault(p.get("river"), []).append([p["lng"], p["lat"]])
+    if len(groups) <= 1:
+        return build_buffer_polygon(next(iter(groups.values()), []), radius_m)
+    try:
+        from shapely.geometry import mapping, shape
+        from shapely.ops import unary_union
+        parts = [build_buffer_polygon(c if len(c) > 1 else [c[0], c[0]], radius_m) for c in groups.values()]
+        shapes = [shape({k: v for k, v in g.items() if k != "properties_note"}) for g in parts if g]
+        if not shapes:
+            return None
+        geo = mapping(unary_union(shapes))
+        geo["properties_note"] = f"buffer {radius_m:g} m around {len(groups)} river corridors"
+        return geo
+    except Exception as e:
+        logger.error(f"Multi-river buffer build failed: {e}")
+        return None
 
 
 def point_in_buffer(lat, lng, buffer_geojson):
@@ -90,7 +109,9 @@ def distance_to_polyline_m(lat, lng, monitor_points):
         return None
     if len(pts) == 1:
         return _seg_dist_m(lat, lng, pts[0], pts[0])
-    return min(_seg_dist_m(lat, lng, pts[i], pts[i + 1]) for i in range(len(pts) - 1))
+    # never measure along the gap between two different rivers of a live area (points carry a 'river' name)
+    segs = [_seg_dist_m(lat, lng, pts[i], pts[i + 1]) for i in range(len(pts) - 1) if pts[i].get("river") == pts[i + 1].get("river")]
+    return min(segs) if segs else min(_seg_dist_m(lat, lng, p, p) for p in pts)
 
 
 def polyline_distance_check(lat, lng, monitor_points, radius_m=1000.0):

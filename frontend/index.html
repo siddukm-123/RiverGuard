@@ -30,12 +30,24 @@
     </div>
 
     <div class="panel" style="margin-bottom: 18px;">
-      <div class="panel-header"><h2>Add a river to monitor</h2></div>
+      <div class="panel-header"><h2>Add a river or place to monitor</h2></div>
       <div style="padding: 16px 18px;">
         <div class="search-row">
-          <input type="text" id="river-search-input" class="search-input" placeholder="Search a river, e.g. 'Tungabhadra river Davangere'">
+          <input type="text" id="river-search-input" class="search-input" placeholder="Search a river, e.g. 'Tungabhadra river Davangere'" autocomplete="off">
+          <div class="mode-switch" id="mode-switch" role="group" aria-label="Search mode">
+            <button type="button" class="mode-btn active" data-mode="search" aria-pressed="true">🔎 Search</button>
+            <button type="button" class="mode-btn" data-mode="live" aria-pressed="false">📍 Live</button>
+          </div>
           <button class="btn primary" id="river-search-btn">Search</button>
         </div>
+        <div class="live-options" id="live-options" hidden>
+          <label class="live-field"><span>Your place name <em>(optional)</em></span>
+            <input type="text" id="live-name" maxlength="120" placeholder="e.g. My sand-watch point"></label>
+          <label class="live-field"><span>Radius around the place</span>
+            <select id="live-radius"><option value="3">3 km</option><option value="5" selected>5 km</option><option value="10">10 km</option><option value="15">15 km</option></select></label>
+        </div>
+        <div class="live-hint" id="live-hint" hidden>Paste a Google Maps link (Share → Copy link) or coordinates such as <code>14.4644, 75.9218</code>.
+          RiverGuard shows the real place name and finds the rivers within the radius.</div>
         <div id="river-search-results" style="margin-top: 10px;"></div>
       </div>
     </div>

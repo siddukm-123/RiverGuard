@@ -56,6 +56,10 @@ function timeAgo(iso) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+function errorText(d, status, fallback) {
+  return [(d && d.error) || fallback || `Request failed (${status})`, d && d.detail && d.detail !== d.error ? `— ${d.detail}` : '', d && d.ref ? `(ref ${d.ref})` : ''].filter(Boolean).join(' ');
+}
+
 function escapeHtml(str) {
   return String(str || '')
     .replace(/&/g, '&amp;')
@@ -76,10 +80,15 @@ async function loadRivers() {
       radius: 7, color: '#4FD1C5', fillColor: '#4FD1C5', fillOpacity: 0.6, weight: 2,
     }).addTo(riverLayerGroup).bindTooltip(r.name, { permanent: false });
 
+    if (r.radius_km) {
+      L.circle([r.center_lat, r.center_lng], { radius: r.radius_km * 1000, color: '#7C9CFF', weight: 1.5, dashArray: '6 6', fillOpacity: 0.04 })
+        .addTo(riverLayerGroup).bindTooltip(`${r.name} — watch radius ${r.radius_km} km${r.place_name ? ' · ' + r.place_name : ''}`);
+    }
     if (r.monitor_points && r.monitor_points.length) {
-      const latlngs = r.monitor_points.map(pt => [pt.lat, pt.lng]);
-      L.polyline(latlngs, { color: '#4FD1C5', weight: 3, opacity: 0.85, dashArray: null })
-        .addTo(corridorLayer).bindTooltip(`${r.name} — scan corridor along river flow`);
+      const byRiver = {};                                   // a live area can hold several rivers: one line per river, never joined
+      r.monitor_points.forEach(pt => (byRiver[pt.river || ''] = byRiver[pt.river || ''] || []).push(pt));
+      Object.entries(byRiver).forEach(([rv, g]) => L.polyline(g.map(pt => [pt.lat, pt.lng]), { color: '#4FD1C5', weight: 3, opacity: 0.85, dashArray: null })
+        .addTo(corridorLayer).bindTooltip(`${r.name}${rv ? ' — ' + rv : ''} — scan corridor along river flow`));
       r.monitor_points.forEach((pt, i) => {
         L.circleMarker([pt.lat, pt.lng], {
           radius: 5, color: '#D9A441', fillColor: '#D9A441', fillOpacity: 0.7, weight: 2,
@@ -111,8 +120,9 @@ function renderRiversList(rivers) {
     return `
       <div class="alert-item rv-row">
         <div class="rv-info">
-          <strong>${escapeHtml(r.name)}</strong>${isTestRiver(r) ? '<span class="test-badge">TEST</span>' : ''}
+          <strong>${escapeHtml(r.name)}</strong>${isTestRiver(r) ? '<span class="test-badge">TEST</span>' : ''}${r.area_kind === 'live_area' ? '<span class="area-badge">📍 LIVE AREA</span>' : ''}
           <div class="meta">${escapeHtml(r.district || r.state || '')}${points ? ` · ${points} corridor points` : ''} · scans every ${r.scan_interval_days || 5}d · last scan: ${lastScan}</div>
+          ${r.area_kind === 'live_area' ? `<div class="meta">📍 ${escapeHtml(r.place_name || '')}${r.radius_km ? ` · radius ${r.radius_km} km` : ''}${r.river_names ? ` · rivers: ${escapeHtml(r.river_names)}` : ''}</div>` : ''}
         </div>
         <div class="rv-actions">
           <button class="btn" onclick="focusRiver('${r.id}')">Show</button>
@@ -126,10 +136,15 @@ function renderRiversList(rivers) {
   }).join('');
 }
 
+function focusRiverBounds(r) {
+  return r && r.radius_km ? L.latLng(r.center_lat, r.center_lng).toBounds(r.radius_km * 2000) : null;
+}
+
 function focusRiver(riverId) {
   const r = riverMarkers[riverId];
   if (!r) return;
-  map.flyTo([r.center_lat, r.center_lng], 11, { duration: 0.8 });
+  const b = focusRiverBounds(r);
+  if (b) map.flyToBounds(b, { duration: 0.8 }); else map.flyTo([r.center_lat, r.center_lng], 11, { duration: 0.8 });
 }
 
 async function toggleMonitoring(riverId, newState) {
@@ -252,8 +267,110 @@ async function addRiverFromSearch(r) {
   }
 }
 
-searchBtn.addEventListener('click', doRiverSearch);
-searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') doRiverSearch(); });
+// ── Search | Live switch ──────────────────────────────────────────────
+// Search: find a river by name (as before). Live: paste a Google Maps link / coordinates -> real place name + rivers within a radius.
+let searchMode = 'search';
+let livePreview = null;
+const previewLayer = L.layerGroup().addTo(map);
+const modeBtns = [...document.querySelectorAll('#mode-switch .mode-btn')];
+
+function clearLivePreview() { previewLayer.clearLayers(); livePreview = null; }
+
+function setSearchMode(mode) {
+  searchMode = mode;
+  modeBtns.forEach(b => { const on = b.dataset.mode === mode; b.classList.toggle('active', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+  document.getElementById('live-options').hidden = mode !== 'live';
+  document.getElementById('live-hint').hidden = mode !== 'live';
+  searchInput.placeholder = mode === 'live' ? 'Paste a Google Maps link or coordinates, e.g. 14.4644, 75.9218' : "Search a river, e.g. 'Tungabhadra river Davangere'";
+  searchBtn.textContent = mode === 'live' ? 'Find area' : 'Search';
+  searchResults.innerHTML = '';
+  clearLivePreview();
+}
+modeBtns.forEach(b => b.addEventListener('click', () => setSearchMode(b.dataset.mode)));
+const runSearch = () => (searchMode === 'live' ? doLivePreview() : doRiverSearch());
+searchBtn.addEventListener('click', runSearch);
+searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+
+const RIVER_COLORS = ['#4FD1C5', '#7C9CFF', '#F6AD55'];
+function drawLivePreview(d) {
+  previewLayer.clearLayers();
+  const circle = L.circle([d.lat, d.lng], { radius: d.radius_km * 1000, color: '#7C9CFF', weight: 2, dashArray: '6 6', fillOpacity: 0.05 }).addTo(previewLayer);
+  L.circleMarker([d.lat, d.lng], { radius: 8, color: '#fff', weight: 2, fillColor: '#E4572E', fillOpacity: 1 }).addTo(previewLayer).bindTooltip(d.place_name, { permanent: true, direction: 'top' });
+  d.rivers.forEach((r, i) => {
+    const c = RIVER_COLORS[i % RIVER_COLORS.length];
+    L.polyline(r.points.map(p => [p.lat, p.lng]), { color: c, weight: 4, opacity: 0.9 }).addTo(previewLayer).bindTooltip(`${r.name} · ${r.distance_km} km away`);
+    r.points.forEach(p => L.circleMarker([p.lat, p.lng], { radius: 4, color: c, fillColor: c, fillOpacity: 0.9, weight: 1 }).addTo(previewLayer));
+  });
+  map.flyToBounds(circle.getBounds().pad(0.08), { duration: 0.8 });
+}
+
+function renderLivePreview(d) {
+  const src = { google_maps: 'Google Maps link', google_short_link: 'Google Maps short link', coordinates: 'coordinates' }[d.source] || 'location';
+  const custom = document.getElementById('live-name').value.trim();
+  const rivers = d.rivers.length
+    ? `<div class="meta" style="margin-top:8px;">Rivers found within ${d.radius_km} km — these will be monitored:</div>
+       <ul class="live-rivers">${d.rivers.map((r, i) => `<li><span style="color:${RIVER_COLORS[i % RIVER_COLORS.length]}">●</span> <strong>${escapeHtml(r.name)}</strong>
+         <span class="meta">${r.distance_km} km away · ${r.length_km} km inside the radius · ${r.points.length} monitoring points</span></li>`).join('')}</ul>`
+    : `<div class="live-warn">${escapeHtml(d.message || 'No river found in this radius.')}</div>`;
+  searchResults.innerHTML = `
+    <div class="live-card">
+      <div class="live-place">📍 <strong>${escapeHtml(d.place_name)}</strong></div>
+      <div class="meta">${d.lat.toFixed(5)}, ${d.lng.toFixed(5)} · from ${src} · correct place name found automatically</div>
+      ${custom ? `<div class="meta" style="margin-top:4px;">Will be saved as: <strong style="color:var(--text);">${escapeHtml(custom)}</strong></div>` : '<div class="meta" style="margin-top:4px;">Tip: type your own place name above before saving (optional).</div>'}
+      ${(d.warnings || []).map(w => `<div class="live-warn">⚠ ${escapeHtml(w)}</div>`).join('')}
+      ${rivers}
+      <div class="live-actions">
+        <button class="btn primary" id="live-save-btn" ${d.rivers.length ? '' : 'disabled'}>Save &amp; start monitoring</button>
+        <button class="btn" id="live-cancel-btn">Cancel</button>
+      </div>
+    </div>`;
+  document.getElementById('live-cancel-btn').onclick = () => { searchResults.innerHTML = ''; clearLivePreview(); };
+  document.getElementById('live-save-btn').onclick = doLiveSave;
+}
+
+async function doLivePreview() {
+  const text = searchInput.value.trim();
+  if (!text) { searchResults.innerHTML = '<div class="empty-state">Paste a Google Maps link or coordinates first.</div>'; return; }
+  const radius = Number(document.getElementById('live-radius').value);
+  searchResults.innerHTML = `<div class="empty-state"><span class="spinner"></span> Finding the place and the rivers within ${radius} km…</div>`;
+  clearLivePreview();
+  try {
+    const res = await apiFetch('/api/live-location/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input: text, radius_km: radius }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { searchResults.innerHTML = `<div class="empty-state" style="color:var(--accent-high);">${escapeHtml(errorText(data, res.status))}</div>`; return; }
+    livePreview = data;
+    drawLivePreview(data);
+    renderLivePreview(data);
+  } catch (e) {
+    searchResults.innerHTML = '<div class="empty-state" style="color:var(--accent-high);">Could not reach the server — check your internet connection.</div>';
+  }
+}
+
+async function doLiveSave() {
+  if (!livePreview) return;
+  const btn = document.getElementById('live-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  const body = { lat: livePreview.lat, lng: livePreview.lng, radius_km: livePreview.radius_km, input: searchInput.value.trim(), name: document.getElementById('live-name').value.trim() };
+  try {
+    const res = await apiFetch('/api/live-location', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      searchResults.innerHTML = `<div class="empty-state" style="color:var(--accent-high);">${escapeHtml(errorText(data, res.status))}</div>`;
+      return;
+    }
+    const n = (data.river.monitor_points || []).length;
+    searchResults.innerHTML = `<div class="empty-state" style="color:var(--accent-teal);">Saved <strong>${escapeHtml(data.river.name)}</strong> (📍 ${escapeHtml(data.place_name)}) — monitoring ${n} points on
+      ${data.rivers.length} river${data.rivers.length === 1 ? '' : 's'} within ${data.radius_km} km.</div>${(data.warnings || []).map(w => `<div class="live-warn">⚠ ${escapeHtml(w)}</div>`).join('')}`;
+    searchInput.value = ''; document.getElementById('live-name').value = '';
+    clearLivePreview();
+    await loadRivers();
+    await refreshAll();
+    const b = focusRiverBounds(data.river);
+    if (b) map.flyToBounds(b, { duration: 0.8 });
+  } catch (e) {
+    searchResults.innerHTML = '<div class="empty-state" style="color:var(--accent-high);">Could not save — check your internet connection.</div>';
+  }
+}
 
 async function loadMetrics() {
   const res = await apiFetch('/api/metrics');
@@ -297,6 +414,8 @@ async function loadAlerts() {
       <span style="font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); margin-left: 8px;">risk ${(a.confidence || 0).toFixed(0)}/100</span>
       <div class="meta">${a.source === 'satellite' ? '🛰 satellite' : '📹 manual upload'} · ${timeAgo(a.detected_at)}${corridorInfo}</div>
       ${dataLabel ? `<div class="meta" style="color:${isReal ? 'var(--accent-teal)' : 'var(--accent-watch)'};">${dataLabel}</div>` : ''}
+      ${!(a.before_image_url && a.after_image_url) && a.annotated_image_path ? `<div style="margin-top:8px;"><img src="${a.annotated_image_path}" alt="detection image" loading="lazy" style="width:100%; border-radius:6px; border:1px solid var(--border);"><div class="meta" style="text-align:center;">detection image${isTest ? ' (simulated illustration)' : ''}</div></div>` : ''}
+      ${a.evidence_pdf_url && !(a.before_image_url && a.after_image_url) ? `<div class="meta" style="margin-top:6px;"><a href="/api/alerts/${a.id}/evidence/verify" target="_blank" rel="noopener">✔ verify hash</a></div>` : ''}
       ${signals.hotspot_label ? `<div class="meta">Hotspot: ${escapeHtml(signals.hotspot_label)} · corridor-relative change ${((signals.satellite_change_score || 0) * 100).toFixed(0)}%${signals.rain_confounder ? ' · ⚠ heavy rain between scenes' : ''}</div>` : ''}
       ${a.source === 'manual_upload' && signals.object_counts ? `<div class="meta">${Object.entries(signals.object_counts).map(([k, v]) => `${escapeHtml(k)}: ${v}`).join(' · ') || 'no relevant objects'}${signals.lowlight && (signals.lowlight.applied || signals.lowlight.frames_enhanced) ? ' · low-light enhanced' : ''}</div>` : ''}
       <div class="reasoning">${escapeHtml(a.reasoning_text || '')}</div>
@@ -383,15 +502,16 @@ async function toggleDemoData() {
   try {
     if (hasDemo) {
       const res = await apiFetch('/api/demo', { method: 'DELETE' });
-      if (!res.ok) { const d = await res.json().catch(() => ({})); alert(d.error || 'Could not remove test data.'); return; }
+      if (!res.ok) { const d = await res.json().catch(() => ({})); alert(errorText(d, res.status, 'Could not remove test data.')); return; }
     } else {
       btn.textContent = 'Mapping the real river…';
       const res = await apiFetch('/api/demo/seed', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { alert(data.error || 'Could not add test data.'); return; }
+      if (!res.ok) { alert(errorText(data, res.status, 'Could not add test data.')); return; }
       await loadRivers();
       await refreshAll();
       if (data.alert && data.alert.lat != null) map.flyTo([data.alert.lat, data.alert.lng], 13, { duration: 0.8 });
+      if (data.warnings && data.warnings.length) alert('Test data added, but:\n\n' + data.warnings.join('\n'));
       return;
     }
     await loadRivers();
