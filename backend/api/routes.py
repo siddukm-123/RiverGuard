@@ -12,6 +12,7 @@ from flask import Blueprint, jsonify, request, send_file
 
 import config
 import demo_data
+from api.db_compat import insert_dropping_missing_columns
 import gcs_storage
 import jobs
 import pipeline
@@ -283,12 +284,90 @@ def create_river():
     return jsonify(river), 201
 
 
+# ── Live location: paste a Google Maps link -> place name + rivers within a radius -> saved monitored area ──
+LIVE_EXTRA_COLUMNS = ("area_kind", "place_name", "radius_km", "source_input", "river_names")
+
+
+def _live_area(data):
+    """Shared by preview and save: coordinates, real place name and the rivers inside the radius."""
+    from satellite import live_location as ll
+    try:
+        radius = ll.clamp_radius_km(data.get("radius_km", ll.DEFAULT_RADIUS_KM))
+        if data.get("lat") is not None and data.get("lng") is not None:
+            lat, lng, source = _float_in(data, "lat", -90, 90), _float_in(data, "lng", -180, 180), "coordinates"
+        else:
+            loc = ll.parse_location(data.get("input"))
+            lat, lng, source = loc["lat"], loc["lng"], loc["source"]
+    except ll.LocationError as e:
+        raise ApiError(str(e), 400, "invalid_location")
+
+    place = ll.reverse_geocode(lat, lng)
+    try:
+        rivers = ll.find_nearby_rivers_cached(lat, lng, radius)
+    except RuntimeError as e:
+        raise ApiError(f"{e}. Please try again in a minute.", 503, "rivers_unavailable")
+    warnings = [] if place else ["The place name could not be looked up right now, so the coordinates are shown instead."]
+    return {"lat": lat, "lng": lng, "source": source, "radius_km": radius, "place": place,
+            "place_name": (place or {}).get("place_name") or f"{lat:.4f}, {lng:.4f}", "rivers": rivers, "warnings": warnings}
+
+
+def _no_river_message(area):
+    return (f"No river was found within {area['radius_km']:g} km of {area['place_name']}. "
+            "Try a larger radius (up to 15 km), or add the river by name with Search.")
+
+
+@api_bp.route("/live-location/preview", methods=["POST"])
+def live_location_preview():
+    """Step 1: resolve the pasted link, show the correct place name and the rivers found in the radius. Saves nothing."""
+    area = _live_area(_json_body())
+    if not area["rivers"]:
+        area["message"] = _no_river_message(area)
+    return jsonify(area)
+
+
+@api_bp.route("/live-location", methods=["POST"])
+def save_live_location():
+    """Step 2: save the place (with the user's own name) as a monitored area covering the rivers inside the radius."""
+    data = _json_body()
+    area = _live_area(data)
+    if not area["rivers"]:
+        raise ApiError(_no_river_message(area), 404, "no_river_nearby")
+
+    place = area["place"] or {}
+    user_name = " ".join(str(data.get("name") or "").split())[:120]
+    name = user_name or place.get("locality") or f"Live area {area['lat']:.3f}, {area['lng']:.3f}"
+    points = [p for r in area["rivers"] for p in r["points"]]
+    radius = int(config.DEFAULT_BUFFER_RADIUS_M)      # integer column: never send 1000.0
+    base = {
+        "name": name, "state": place.get("state") or None, "district": place.get("district") or place.get("locality") or None,
+        "center_lat": area["lat"], "center_lng": area["lng"], "buffer_radius_m": radius,
+        "buffer_geojson": _build_buffer(points, radius), "scan_interval_days": 5,
+        "monitoring_enabled": bool(data.get("monitoring_enabled", True)), "monitor_points": points,
+    }
+    extra = {"area_kind": "live_area", "place_name": area["place_name"], "radius_km": area["radius_km"],
+             "source_input": str(data.get("input") or "")[:500] or "coordinates", "river_names": ", ".join(r["name"] for r in area["rivers"])}
+    warnings = list(area["warnings"])
+    try:
+        river, dropped = insert_dropping_missing_columns(table_insert, "rivers", {**base, **extra}, LIVE_EXTRA_COLUMNS + ("monitor_points", "buffer_geojson"))
+    except Exception as e:
+        logger.exception("Failed to insert live area")
+        raise ApiError(f"Database error: {e}", 500, "db_error")
+    if any(c in dropped for c in LIVE_EXTRA_COLUMNS):
+        warnings.append("Saved, but your database does not have the live-area columns yet, so the radius and place name will not be "
+                        "remembered after a refresh. Run supabase/migrations/0003_live_areas.sql in the Supabase SQL editor.")
+    if any(c in dropped for c in ("monitor_points", "buffer_geojson")):
+        warnings.append("Your rivers table is missing the corridor columns, so the river outline is not stored. Run supabase/migrations/0001_init.sql.")
+    river.setdefault("monitor_points", points)
+    summary = [{"name": r["name"], "distance_km": r["distance_km"], "length_km": r["length_km"], "point_count": len(r["points"])} for r in area["rivers"]]
+    return jsonify({"river": river, "place_name": area["place_name"], "radius_km": area["radius_km"], "rivers": summary, "warnings": warnings}), 201
+
+
 @api_bp.route("/demo/seed", methods=["POST"])
 def seed_demo_data():
     """Adds the clearly-labelled TEST river + HIGH alert (see demo_data.py). Idempotent."""
     from satellite.river_corridor import snap_to_river_center
     try:
-        out = demo_data.seed(snap_to_river_center, _build_buffer, config.DEFAULT_BUFFER_RADIUS_M)
+        out = demo_data.seed(snap_to_river_center, _build_buffer, int(config.DEFAULT_BUFFER_RADIUS_M))
     except demo_data.DemoSeedError as e:
         raise ApiError(str(e), 503, "demo_unavailable")
     return jsonify(out), (201 if out["created"] else 200)
@@ -347,6 +426,19 @@ def refresh_river_corridor(river_id):
     if not matches:
         raise ApiError("River not found", 404, "not_found")
     river = matches[0]
+    if river.get("area_kind") == "live_area" and river.get("radius_km"):    # live area: re-find the rivers inside its radius, keep the pasted centre
+        from satellite import live_location as ll
+        try:
+            found = ll.find_nearby_rivers(river["center_lat"], river["center_lng"], float(river["radius_km"]))
+        except RuntimeError as e:
+            raise ApiError(f"{e}. Please try again in a minute.", 503, "rivers_unavailable")
+        pts = [p for r in found for p in r["points"]]
+        if not pts:
+            raise ApiError(_no_river_message({"radius_km": float(river["radius_km"]), "place_name": river.get("place_name") or river["name"]}), 400, "no_channel")
+        radius = int(river.get("buffer_radius_m") or config.DEFAULT_BUFFER_RADIUS_M)
+        updated = table_update("rivers", river_id, {"monitor_points": pts, "buffer_geojson": _build_buffer(pts, radius)})
+        updated["monitor_points"] = pts
+        return jsonify(updated)
     clat, clng, points = snap_to_river_center(river["center_lat"], river["center_lng"], river_name=river.get("name"))
     if not points:
         raise ApiError("Could not find river channel for corridor refresh.", 400, "no_channel")
