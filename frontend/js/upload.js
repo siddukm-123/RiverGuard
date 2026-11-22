@@ -98,6 +98,8 @@ submitBtn.addEventListener('click', async () => {
   const fd = new FormData();
   fd.append('file', selectedFile);
   fd.append('lowlight', lowlightSelect.value);
+  const detName = document.getElementById('detection-name').value.trim();
+  if (detName) fd.append('name', detName);
   if (riverSelect.value) fd.append('river_id', riverSelect.value);
   const lat = document.getElementById('lat-input').value;
   const lng = document.getElementById('lng-input').value;
@@ -140,6 +142,7 @@ submitBtn.addEventListener('click', async () => {
       });
     }
     renderResult(data);
+    showSavedNotice(data);
     statusText.textContent = 'Done.';
   } catch (err) {
     statusText.textContent = '';
@@ -279,4 +282,16 @@ function renderResult(a) {
       document.getElementById('result-img').src = imgSrc(btn.dataset.kind);
     });
   }
+}
+
+
+// ── saved-detection notice (the file, its name and the result are kept in Details → Manual detections) ──
+function showSavedNotice(data) {
+  if (!data || !data.saved) return;
+  const s = data.saved;
+  const warn = (s.warnings || []).map(w => `<div class="live-warn">⚠ ${esc(w)}</div>`).join('');
+  resultArea.insertAdjacentHTML('afterbegin', `<div class="rg-note" style="border-color:var(--accent-teal);">✔ Saved as <strong>${esc(s.name || 'this detection')}</strong>${s.video_stored ? ' together with its video' : ''}.
+    <a href="/details">Open it in Details → Manual detections</a>.${warn}</div>`);
+  const nameInput = document.getElementById('detection-name');
+  if (nameInput) nameInput.value = '';
 }

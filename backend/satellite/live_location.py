@@ -238,27 +238,83 @@ def _longest_run_inside(coords, lat, lng, radius_m):
     return max(runs, key=rc._polyline_length) if runs else []
 
 
-def fetch_waterways_around(lat, lng, radius_m, timeout=25):
-    """Raw Overpass ways (with geometry) of rivers/canals within radius; falls back to NAMED streams (small seasonal rivers)."""
+OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
+HEDGE_DELAYS_S = (0, 4, 8, 12)      # servers are started staggered; the first good answer wins (public servers are often busy)
+
+
+class _Cancelled(Exception):
+    pass
+
+
+def _overpass_once(url, query, timeout, delay, stop, post):
+    if delay and stop.wait(delay):
+        raise _Cancelled()
+    if stop.is_set():
+        raise _Cancelled()
+    resp = post(url, data={"data": query}, headers=HEADERS, timeout=(6, timeout + 5))
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    try:
+        data = resp.json()
+    except ValueError:
+        raise RuntimeError("busy (not a data response)")
+    if data.get("remark") and "error" in data["remark"].lower() and not data.get("elements"):
+        raise RuntimeError("server overloaded (query timed out)")
+    return data
+
+
+def fetch_waterways_around(lat, lng, radius_m, timeout=40, post=None, mirrors=None, delays=None):
+    """
+    Raw Overpass ways (with geometry) of rivers, named streams and named canals within radius, from ONE query sent to several
+    public OpenStreetMap servers (staggered). The first valid answer wins. If every server fails, the error lists why.
+    """
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    post = post or requests.post
+    mirrors = mirrors or OVERPASS_MIRRORS
+    delays = delays if delays is not None else HEDGE_DELAYS_S
     around = f"(around:{int(radius_m)},{lat},{lng})"
-    queries = [f'[out:json][timeout:{timeout}];way["waterway"~"^(river|canal)$"]{around};out geom tags;',
-               f'[out:json][timeout:{timeout}];way["waterway"="stream"]["name"]{around};out geom tags;']
-    for q in queries:
-        data = None
-        for url in rc.OVERPASS_URLS:
-            try:
-                resp = requests.post(url, data={"data": q}, headers=HEADERS, timeout=timeout + 5)
-                resp.raise_for_status()
-                data = resp.json()
-                break
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"Overpass {url} failed: {e}")
-        if data is None:
-            raise RuntimeError("OpenStreetMap river data is not reachable right now")
-        ways = [e for e in data.get("elements", []) if e.get("type") == "way" and e.get("geometry")]
-        if ways:
-            return ways
-    return []
+    query = (f'[out:json][timeout:{timeout}];(way["waterway"="river"]{around};way["waterway"="stream"]["name"]{around};'
+             f'way["waterway"="canal"]["name"]{around};);out geom tags;')
+    stop = threading.Event()
+    ex = ThreadPoolExecutor(max_workers=len(mirrors))
+    futures = {ex.submit(_overpass_once, u, query, timeout, delays[i] if i < len(delays) else delays[-1], stop, post): u for i, u in enumerate(mirrors)}
+    errors, pending = {}, set(futures)
+    try:
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for f in done:
+                host = urlparse(futures[f]).hostname
+                try:
+                    data = f.result()
+                except _Cancelled:
+                    continue
+                except requests.Timeout:
+                    errors[host] = "timed out"
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    errors[host] = str(e)[:80] or e.__class__.__name__
+                    continue
+                stop.set()
+                return [e for e in data.get("elements", []) if e.get("type") == "way" and e.get("geometry")]
+    finally:
+        stop.set()
+        ex.shutdown(wait=False, cancel_futures=True)
+    reasons = "; ".join(f"{h}: {r}" for h, r in errors.items())
+    raise RuntimeError(f"OpenStreetMap river data could not be reached right now ({reasons})")
+
+
+def _best_class(ways):
+    """Rivers first; named streams (small seasonal rivers) only if there is no river; canals only as a last resort."""
+    for cls in ("river", "stream", "canal"):
+        sel = [w for w in ways if (w.get("tags") or {}).get("waterway") == cls]
+        if sel:
+            return sel
+    return ways
 
 
 def _way_name(way):
@@ -273,7 +329,7 @@ def find_nearby_rivers(lat, lng, radius_km=DEFAULT_RADIUS_KM, max_rivers=3, tota
     Points are sampled ON the channel and only from the part of the river that lies inside the radius.
     """
     radius_m = radius_km * 1000.0
-    ways = (fetch or fetch_waterways_around)(lat, lng, radius_m)
+    ways = _best_class((fetch or fetch_waterways_around)(lat, lng, radius_m))
     groups = {}
     for w in ways:
         name = _way_name(w)
@@ -332,6 +388,37 @@ def find_nearby_rivers_cached(lat, lng, radius_km, **kw):
         for k in [k for k, v in _AREA_CACHE.items() if now - v[0] > _AREA_TTL_S]:
             _AREA_CACHE.pop(k, None)
     return rivers
+
+
+_CITY_CACHE = {}
+
+
+def reverse_geocode_city(lat, lng, http_get=None):
+    """{"name", "boundingbox": [south, north, west, east]} of the city/town the point is in, or None."""
+    key = (round(lat, 2), round(lng, 2))
+    if key in _CITY_CACHE:
+        return _CITY_CACHE[key]
+    try:
+        resp = (http_get or requests.get)(NOMINATIM_REVERSE, params={"lat": lat, "lon": lng, "format": "jsonv2", "zoom": 10,
+                                                                       "addressdetails": 1, "accept-language": "en"}, headers=HEADERS, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        bb = [float(v) for v in data["boundingbox"]]
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"City boundary lookup failed for ({lat}, {lng}): {e}")
+        return None
+    addr = data.get("address") or {}
+    name = next((addr[k] for k in ("city", "town", "village", "municipality", "county") if addr.get(k)), data.get("name") or "the city")
+    out = {"name": name, "boundingbox": bb}
+    _CITY_CACHE[key] = out
+    return out
+
+
+def city_radius_km(lat, lng, boundingbox, min_km=3.0, max_km=MAX_RADIUS_KM):
+    """Radius that reaches every corner of the city's bounding box from the pasted point, kept between min_km and max_km."""
+    s, n, w, e = boundingbox
+    far = max(rc._haversine_m(lat, lng, a, b) for a in (s, n) for b in (w, e)) / 1000.0
+    return round(min(max(far, min_km), max_km), 1)
 
 
 def clamp_radius_km(value):

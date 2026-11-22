@@ -317,6 +317,7 @@ function renderLivePreview(d) {
       <div class="live-place">📍 <strong>${escapeHtml(d.place_name)}</strong></div>
       <div class="meta">${d.lat.toFixed(5)}, ${d.lng.toFixed(5)} · from ${src} · correct place name found automatically</div>
       ${custom ? `<div class="meta" style="margin-top:4px;">Will be saved as: <strong style="color:var(--text);">${escapeHtml(custom)}</strong></div>` : '<div class="meta" style="margin-top:4px;">Tip: type your own place name above before saving (optional).</div>'}
+      ${(d.notes || []).map(n => `<div class="meta" style="margin-top:4px;">ℹ ${escapeHtml(n)}</div>`).join('')}
       ${(d.warnings || []).map(w => `<div class="live-warn">⚠ ${escapeHtml(w)}</div>`).join('')}
       ${rivers}
       <div class="live-actions">
@@ -331,8 +332,9 @@ function renderLivePreview(d) {
 async function doLivePreview() {
   const text = searchInput.value.trim();
   if (!text) { searchResults.innerHTML = '<div class="empty-state">Paste a Google Maps link or coordinates first.</div>'; return; }
-  const radius = Number(document.getElementById('live-radius').value);
-  searchResults.innerHTML = `<div class="empty-state"><span class="spinner"></span> Finding the place and the rivers within ${radius} km…</div>`;
+  const radiusVal = document.getElementById('live-radius').value;
+  const radius = radiusVal === 'city' ? 'city' : Number(radiusVal);
+  searchResults.innerHTML = `<div class="empty-state"><span class="spinner"></span> Finding the place and the rivers ${radius === 'city' ? 'in the city area' : `within ${radius} km`} — this can take up to a minute…</div>`;
   clearLivePreview();
   try {
     const res = await apiFetch('/api/live-location/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input: text, radius_km: radius }) });

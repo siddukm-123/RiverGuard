@@ -20,17 +20,6 @@
 #detail-map { height:320px; border-radius:8px; border:1px solid var(--border); margin-top:12px; }
 .img-pair { display:flex; gap:10px; margin-top:12px; }
 .img-pair img { width:100%; border-radius:6px; border:1px solid var(--border); }
-.river-row > div { min-width:0; }
-.river-row .btn { white-space:nowrap; }
-@media (max-width: 700px) {
-  .details-layout { padding: 12px 10px 28px; }
-  .river-row { flex-direction:column; align-items:stretch; gap:10px; padding:12px 14px; }
-  .river-row > div:last-child { display:flex; flex-wrap:wrap; gap:8px; }
-  .point-table { display:block; overflow-x:auto; }
-  .img-pair { flex-direction:column; }
-  #detail-map { height:260px; }
-  .scan-card { padding:12px; }
-}
 </style>
 </head>
 <body>
@@ -45,6 +34,11 @@
 </div>
 
 <div class="details-layout">
+  <div class="panel" id="saved-panel" style="margin-bottom:18px;">
+    <div class="panel-header"><h2>Manual detections — saved files</h2><span class="meta" id="saved-count"></span></div>
+    <div id="saved-list"><div class="empty-state">Loading saved detections…</div></div>
+  </div>
+
   <div class="panel">
     <div class="panel-header"><h2>Monitored rivers — scan history</h2></div>
     <div id="rivers-detail-list">
@@ -65,6 +59,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="js/env-config.js"></script>
 <script src="js/api.js"></script>
+<script src="js/video-overlay.js"></script>
 <script src="js/details.js"></script>
 </body>
 </html>

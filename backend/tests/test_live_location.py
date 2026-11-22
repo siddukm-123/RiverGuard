@@ -176,23 +176,77 @@ def test_nothing_found_and_osm_errors():
         ll.find_nearby_rivers(*CENTER, radius_km=5, fetch=down)
 
 
-def test_overpass_mirror_failover_stream_fallback_and_outage(monkeypatch):
-    posted = []
+class PostResp:
+    def __init__(self, status=200, payload=None, text_ok=True):
+        self.status_code, self.payload, self.text_ok = status, payload, text_ok
+
+    def json(self):
+        if not self.text_ok:
+            raise ValueError("html")
+        return self.payload
+
+
+MIRRORS = ["https://a.example/api/interpreter", "https://b.example/api/interpreter", "https://c.example/api/interpreter"]
+GOOD = {"elements": [way(9, "Halla", line((14.51, 75.80), (14.52, 75.82), 10), "stream")]}
+
+
+def test_first_good_mirror_wins_even_if_others_fail_slowly_or_oddly():
+    seen = []
 
     def post(url, data=None, **kw):
-        posted.append((url, data["data"]))
-        if "overpass-api.de" in url:
-            raise requests.ConnectionError("mirror 1 down")
-        elements = [] if "river|canal" in data["data"] else [way(9, "Halla", line((14.51, 75.80), (14.52, 75.82), 10), "stream")]
-        return Fake({"elements": elements})
-    monkeypatch.setattr(ll.requests, "post", post)
-    ways = ll.fetch_waterways_around(*CENTER, 5000)
-    assert [w["tags"]["name"] for w in ways] == ["Halla"]                        # no river -> named streams (small seasonal rivers)
-    assert any("kumi" in u for u, _ in posted)                                   # second mirror used
+        seen.append(url)
+        if "a.example" in url:
+            return PostResp(429)
+        if "b.example" in url:
+            return PostResp(200, GOOD)
+        raise requests.Timeout("slow")
+    ways = ll.fetch_waterways_around(*CENTER, 5000, post=post, mirrors=MIRRORS, delays=(0, 0, 0))
+    assert [w["tags"]["name"] for w in ways] == ["Halla"] and "https://b.example/api/interpreter" in seen
 
-    monkeypatch.setattr(ll.requests, "post", lambda *a, **k: (_ for _ in ()).throw(requests.ConnectionError("all down")))
-    with pytest.raises(RuntimeError, match="not reachable"):
-        ll.fetch_waterways_around(*CENTER, 5000)
+
+def test_busy_server_answering_200_with_a_runtime_error_remark_is_skipped():
+    def post(url, data=None, **kw):
+        if "a.example" in url:
+            return PostResp(200, {"elements": [], "remark": "runtime error: Query timed out in \"query\" at line 1"})
+        return PostResp(200, GOOD)
+    assert ll.fetch_waterways_around(*CENTER, 5000, post=post, mirrors=MIRRORS[:2], delays=(0, 0))
+
+
+def test_when_every_server_fails_the_message_says_why_for_each():
+    def post(url, data=None, **kw):
+        if "a.example" in url:
+            return PostResp(429)
+        if "b.example" in url:
+            raise requests.Timeout("slow")
+        return PostResp(200, None, text_ok=False)
+    with pytest.raises(RuntimeError) as e:
+        ll.fetch_waterways_around(*CENTER, 5000, post=post, mirrors=MIRRORS, delays=(0, 0, 0))
+    msg = str(e.value)
+    assert "could not be reached" in msg and "a.example: HTTP 429" in msg and "b.example: timed out" in msg and "c.example: busy" in msg
+
+
+def test_rivers_beat_streams_and_canals_and_streams_beat_canals():
+    river, stream, canal = (way(1, "Real River", line((14.50, 75.70), (14.52, 75.90), 30)), way(2, "Halla", line((14.51, 75.70), (14.51, 75.90), 30), "stream"),
+                            way(3, "Big Canal", line((14.52, 75.70), (14.52, 75.90), 30), "canal"))
+    assert [r["name"] for r in ll.find_nearby_rivers(*CENTER, radius_km=5, fetch=lambda *a: [river, stream, canal])] == ["Real River"]
+    assert [r["name"] for r in ll.find_nearby_rivers(*CENTER, radius_km=5, fetch=lambda *a: [stream, canal])] == ["Halla"]
+    assert [r["name"] for r in ll.find_nearby_rivers(*CENTER, radius_km=5, fetch=lambda *a: [canal])] == ["Big Canal"]
+
+
+def test_city_radius_covers_the_boundary_and_stays_between_3_and_15_km():
+    assert 6 < ll.city_radius_km(*CENTER, [14.45, 14.57, 75.75, 75.87]) < 12
+    assert ll.city_radius_km(*CENTER, [14.512, 14.513, 75.804, 75.806]) == 3.0
+    assert ll.city_radius_km(*CENTER, [13.0, 16.0, 74.0, 77.0]) == 15.0
+
+
+def test_city_boundary_lookup_and_failure():
+    payload = {"boundingbox": ["14.45", "14.57", "75.75", "75.87"], "address": {"town": "Harihar", "country_code": "in"}}
+    got = ll.reverse_geocode_city(14.5111, 75.8111, http_get=lambda url, **k: Fake(payload))
+    assert got == {"name": "Harihar", "boundingbox": [14.45, 14.57, 75.75, 75.87]}
+
+    def boom(url, **k):
+        raise requests.Timeout("slow")
+    assert ll.reverse_geocode_city(1.111, 2.222, http_get=boom) is None
 
 
 def test_preview_and_save_share_one_slow_osm_call(monkeypatch):
@@ -229,6 +283,7 @@ TWO_RIVERS = [
 def fake_world(monkeypatch):
     state = {"rivers": TWO_RIVERS}
     monkeypatch.setattr(ll, "reverse_geocode", lambda lat, lng, **k: PLACE)
+    monkeypatch.setattr(ll, "reverse_geocode_city", lambda lat, lng, **k: {"name": "Harihar", "boundingbox": [14.45, 14.57, 75.75, 75.87]})
     monkeypatch.setattr(ll, "find_nearby_rivers_cached", lambda lat, lng, r, **k: state["rivers"])
     yield state
     for r in [r for r in table_select("rivers") if r.get("area_kind") == "live_area"]:
@@ -252,7 +307,7 @@ def test_preview_shows_correct_place_name_and_rivers_and_saves_nothing(client, f
 def test_preview_without_rivers_explains_and_suggests_a_wider_radius(client, fake_world):
     fake_world["rivers"] = []
     body = client.post("/api/live-location/preview", json={"input": "14.5126, 75.805", "radius_km": 3}).get_json()
-    assert body["rivers"] == [] and "within 3 km" in body["message"] and "15 km" in body["message"]
+    assert body["rivers"] == [] and "within 15 km" in body["message"] and "by name" in body["message"]
 
 
 def test_preview_rejects_bad_input_and_radius_with_friendly_messages(client, fake_world):
@@ -268,7 +323,7 @@ def test_osm_outage_is_a_clear_503(client, monkeypatch):
     def down(*a, **k):
         raise RuntimeError("OpenStreetMap river data is not reachable right now")
     monkeypatch.setattr(ll, "find_nearby_rivers_cached", down)
-    r = client.post("/api/live-location/preview", json={"input": "14.5126, 75.805"})
+    r = client.post("/api/live-location/preview", json={"input": "14.5126, 75.805", "radius_km": 5})
     assert r.status_code == 503 and "try again" in r.get_json()["error"].lower()
 
 
@@ -315,7 +370,7 @@ def test_save_with_no_river_in_radius_is_a_404_with_advice(client, fake_world):
     fake_world["rivers"] = []
     before = len(table_select("rivers"))
     r = client.post("/api/live-location", json={"input": "14.5126, 75.805", "radius_km": 2})
-    assert r.status_code == 404 and r.get_json()["code"] == "no_river_nearby" and "larger radius" in r.get_json()["error"]
+    assert r.status_code == 404 and r.get_json()["code"] == "no_river_nearby" and "add the river by name" in r.get_json()["error"]
     assert len(table_select("rivers")) == before
 
 
@@ -381,3 +436,23 @@ def test_live_area_can_be_scanned_and_used_like_any_river(client, fake_world):
     river = client.post("/api/live-location", json={"input": GOOGLE, "name": "Area"}).get_json()["river"]
     import scheduler
     assert scheduler._due_for_scan({**river, "last_scanned_at": None}) is True   # monitored automatically like a river
+
+
+def test_default_radius_is_the_whole_city_taken_from_its_boundary(client, fake_world):
+    body = client.post("/api/live-location/preview", json={"input": GOOGLE}).get_json()
+    assert 6 < body["radius_km"] < 12 and any("covers the whole Harihar area" in n for n in body["notes"])
+    assert client.post("/api/live-location/preview", json={"input": GOOGLE, "radius_km": "city"}).get_json()["radius_km"] == body["radius_km"]
+
+
+def test_no_river_in_the_radius_widens_to_15_km_automatically(client, fake_world, monkeypatch):
+    asked = []
+    monkeypatch.setattr(ll, "find_nearby_rivers_cached", lambda lat, lng, r, **k: asked.append(r) or ([] if r < 15 else TWO_RIVERS))
+    body = client.post("/api/live-location/preview", json={"input": GOOGLE, "radius_km": 3}).get_json()
+    assert asked == [3.0, 15.0] and body["radius_km"] == 15.0 and [r["name"] for r in body["rivers"]] == ["Tungabhadra", "Haridra"]
+    assert any("widened to 15 km" in n for n in body["notes"]) and "message" not in body
+
+
+def test_city_boundary_lookup_failure_falls_back_to_10_km(client, fake_world, monkeypatch):
+    monkeypatch.setattr(ll, "reverse_geocode_city", lambda *a, **k: None)
+    body = client.post("/api/live-location/preview", json={"input": GOOGLE}).get_json()
+    assert body["radius_km"] == 10.0 and any("10 km" in n for n in body["notes"])

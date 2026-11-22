@@ -8,13 +8,14 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, Response, jsonify, request, send_file
 
 import config
 import demo_data
 from api.db_compat import insert_dropping_missing_columns
 import gcs_storage
 import jobs
+import saved_detections
 import pipeline
 from api.supabase_client import (table_select, table_insert, table_update, table_delete,
                                  table_delete_where, storage_mode)
@@ -291,29 +292,49 @@ LIVE_EXTRA_COLUMNS = ("area_kind", "place_name", "radius_km", "source_input", "r
 def _live_area(data):
     """Shared by preview and save: coordinates, real place name and the rivers inside the radius."""
     from satellite import live_location as ll
+    notes = []
     try:
-        radius = ll.clamp_radius_km(data.get("radius_km", ll.DEFAULT_RADIUS_KM))
         if data.get("lat") is not None and data.get("lng") is not None:
             lat, lng, source = _float_in(data, "lat", -90, 90), _float_in(data, "lng", -180, 180), "coordinates"
         else:
             loc = ll.parse_location(data.get("input"))
             lat, lng, source = loc["lat"], loc["lng"], loc["source"]
+        raw = data.get("radius_km", "city")
+        if str(raw).strip().lower() == "city":       # radius = the whole city/town the point is in (from its real boundary)
+            city = ll.reverse_geocode_city(lat, lng)
+            if city:
+                radius = ll.city_radius_km(lat, lng, city["boundingbox"])
+                notes.append(f"Radius {radius:g} km covers the whole {city['name']} area.")
+            else:
+                radius = 10.0
+                notes.append("The city boundary could not be looked up right now, so a 10 km radius is used.")
+        else:
+            radius = ll.clamp_radius_km(raw)
     except ll.LocationError as e:
         raise ApiError(str(e), 400, "invalid_location")
 
     place = ll.reverse_geocode(lat, lng)
+    searched = radius
     try:
         rivers = ll.find_nearby_rivers_cached(lat, lng, radius)
+        if not rivers and radius < ll.MAX_RADIUS_KM:          # nothing in the radius: look wider before giving up
+            searched = ll.MAX_RADIUS_KM
+            wider = ll.find_nearby_rivers_cached(lat, lng, ll.MAX_RADIUS_KM)
+            if wider:
+                notes.append(f"No river within {radius:g} km, so the search was widened to {ll.MAX_RADIUS_KM:g} km.")
+                radius, rivers = ll.MAX_RADIUS_KM, wider
     except RuntimeError as e:
         raise ApiError(f"{e}. Please try again in a minute.", 503, "rivers_unavailable")
     warnings = [] if place else ["The place name could not be looked up right now, so the coordinates are shown instead."]
-    return {"lat": lat, "lng": lng, "source": source, "radius_km": radius, "place": place,
+    return {"lat": lat, "lng": lng, "source": source, "radius_km": radius, "searched_km": searched, "notes": notes, "place": place,
             "place_name": (place or {}).get("place_name") or f"{lat:.4f}, {lng:.4f}", "rivers": rivers, "warnings": warnings}
 
 
 def _no_river_message(area):
-    return (f"No river was found within {area['radius_km']:g} km of {area['place_name']}. "
-            "Try a larger radius (up to 15 km), or add the river by name with Search.")
+    searched = area.get("searched_km") or area["radius_km"]
+    tail = ("Try a point closer to the river, or add the river by name with Search." if searched >= 15
+            else "Try a larger radius (up to 15 km), or add the river by name with Search.")
+    return f"No river was found within {searched:g} km of {area['place_name']}. {tail}"
 
 
 @api_bp.route("/live-location/preview", methods=["POST"])
@@ -623,7 +644,7 @@ def _track_upload(upload_id, fields):
         logger.warning(f"Could not update uploads row {upload_id}: {e.__class__.__name__}: {e}")
 
 
-def _run_upload(save_path, is_image, river, lat, lng, lowlight_mode, original_name, upload_id):
+def _run_upload(save_path, is_image, river, lat, lng, lowlight_mode, original_name, upload_id, name=None):
     """Executed inline or in a job. Raises ApiError with the right status for bad media / missing model."""
     from detection.detector import ModelUnavailableError
     try:
@@ -642,7 +663,12 @@ def _run_upload(save_path, is_image, river, lat, lng, lowlight_mode, original_na
         _track_upload(upload_id, {"status": "failed", "error_message": str(e)[:500]})
         raise ApiError(f"Detection failed: {e.__class__.__name__}: {str(e)[:300]}", 500, "pipeline_error")
     _track_upload(upload_id, {"status": "done", "result_alert_id": alert["id"]})
-    return _public_alert(alert) | {k: alert[k] for k in ("detections", "object_counts", "analysis", "video_overlay") if k in alert} | (
+    try:      # keep the file + name for the Details page; never allowed to fail a finished detection
+        saved = saved_detections.persist(alert, save_path, is_image, name, original_name)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Saving the detection failed")
+        saved = {"name": saved_detections.clean_name(name, original_name), "warnings": [f"Could not save the file: {e.__class__.__name__}"], "video_stored": False}
+    return _public_alert(alert) | {"saved": saved} | {k: alert[k] for k in ("detections", "object_counts", "analysis", "video_overlay") if k in alert} | (
         {"track_behaviors": alert["track_behaviors"], "detections_total": alert["detections_total"]} if "track_behaviors" in alert else {})
 
 
@@ -693,10 +719,147 @@ def upload_and_detect():
     except Exception as e:  # noqa: BLE001 - the log row is optional; detection still runs
         logger.warning(f"Could not create uploads row: {e.__class__.__name__}: {e}")
         upload_id = None
-    args = (save_path, is_image, river, lat, lng, lowlight_mode, file.filename, upload_id)
+    args = (save_path, is_image, river, lat, lng, lowlight_mode, file.filename, upload_id, saved_detections.clean_name(request.form.get("name"), None) or None)
     if request.form.get("async") in ("1", "true"):
         return jsonify({"job_id": jobs.submit("upload", _run_upload, *args), "status": "queued"}), 202
     return jsonify(_run_upload(*args)), 201
+
+
+# ── saved manual detections (Details page) ─────────────────────────────
+VIDEO_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+def _manual_alert_or_404(alert_id):
+    rows = table_select("alerts", filters={"id": alert_id})
+    if not rows or rows[0].get("source") != "manual_upload":
+        raise ApiError("Saved detection not found.", 404, "not_found")
+    return rows[0]
+
+
+def _detection_view(a, river_names):
+    aid, sig = a["id"], _signals(a)
+    media = _media_paths(a)
+    has_video = bool(media.get("video"))
+    kind = sig.get("file_kind") or ("video" if has_video or sig.get("input_type") == "video" else "image")
+    return {
+        "id": aid, "name": sig.get("detection_name") or sig.get("original_filename") or f"Detection {aid[:8]}",
+        "original_filename": sig.get("original_filename"), "file_kind": kind, "severity": a.get("severity"), "confidence": a.get("confidence"),
+        "detected_at": a.get("detected_at"), "lat": a.get("lat"), "lng": a.get("lng"), "inside_buffer": a.get("inside_buffer"),
+        "river_id": a.get("river_id"), "river_name": river_names.get(a.get("river_id")), "reasoning_text": a.get("reasoning_text"),
+        "object_counts": sig.get("object_counts") or {}, "video_info": sig.get("video"), "is_test": sig.get("demo_test") is True,
+        "has_video": has_video, "video_url": f"/api/alerts/{aid}/video" if has_video else None,
+        "overlay_url": f"/api/alerts/{aid}/overlay" if media.get("overlay") else None,
+        "image_url": f"/api/alerts/{aid}/annotated.jpg" if a.get("annotated_image_path") else None,
+        "pdf_url": f"/api/alerts/{aid}/evidence.pdf" if a.get("evidence_pdf_url") else None,
+    }
+
+
+@api_bp.route("/detections", methods=["GET"])
+def list_saved_detections():
+    """Every saved manual detection (image or video), newest first, with its name and result."""
+    rows = table_select("alerts", filters={"source": "manual_upload"}, order_by="detected_at", desc=True, limit=200)
+    names = {r["id"]: r["name"] for r in table_select("rivers")}
+    return jsonify([_detection_view(a, names) for a in rows])
+
+
+@api_bp.route("/detections/<alert_id>", methods=["PATCH"])
+def rename_saved_detection(alert_id):
+    a = _manual_alert_or_404(alert_id)
+    name = saved_detections.clean_name(_json_body().get("name"))
+    if not name:
+        raise ApiError("Give the detection a name.", 400, "invalid_field")
+    sig = dict(_signals(a))
+    sig["detection_name"] = name
+    table_update("alerts", alert_id, {"reasoning_signals": sig})
+    return jsonify({"id": alert_id, "name": name})
+
+
+def _remove_file(path):
+    """Deletes a stored file: a bucket object, or a local file inside our own upload/evidence folders (never anywhere else)."""
+    if not path:
+        return
+    if gcs_storage.is_ref(path):
+        gcs_storage.delete_ref(path)
+        return
+    try:
+        p = Path(str(path)).resolve()
+        if any(base.resolve() in p.parents for base in (Path(config.UPLOAD_DIR), Path(config.EVIDENCE_DIR))):
+            p.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning(f"Could not delete {path}: {e}")
+
+
+@api_bp.route("/detections/<alert_id>", methods=["DELETE"])
+def delete_saved_detection(alert_id):
+    """Deletes a saved manual detection with its video, boxes, pictures, PDF and detection rows. Satellite alerts are never touched."""
+    a = _manual_alert_or_404(alert_id)
+    for ref in list(_media_paths(a).values()) + [a.get("annotated_image_path"), a.get("evidence_pdf_url")]:
+        _remove_file(ref)
+    table_delete_where("detections", {"alert_id": alert_id})
+    table_delete("alerts", alert_id)
+    return jsonify({"deleted": alert_id})
+
+
+def _media_ref(alert_id, kind):
+    a = _manual_alert_or_404(alert_id)
+    ref = _media_paths(a).get(kind)
+    if not ref:
+        raise ApiError(f"No {kind} was saved for this detection.", 404, "file_missing")
+    return ref
+
+
+@api_bp.route("/alerts/<alert_id>/video", methods=["GET"])
+def get_saved_video(alert_id):
+    """Streams the saved video with HTTP Range support, so the browser can play and seek without downloading everything."""
+    ref = _media_ref(alert_id, "video")
+    ctype = saved_detections.VIDEO_TYPES.get(Path(str(ref)).suffix.lower(), "video/mp4")
+    if not gcs_storage.is_ref(ref):
+        if not Path(ref).exists():
+            raise ApiError("The saved video is no longer on the server (storage bucket not configured, or it was removed at a redeploy).", 404, "file_missing")
+        return send_file(ref, mimetype=ctype, conditional=True, max_age=3600)
+
+    stat = gcs_storage.stat_ref(ref)
+    if not stat:
+        raise ApiError("The saved video is missing from the storage bucket.", 404, "file_missing")
+    size = stat[0]
+    base = {"Content-Type": ctype, "Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
+    m = re.match(r"^bytes=(\d*)-(\d*)$", (request.headers.get("Range") or "").strip())
+    if m and (m.group(1) or m.group(2)):
+        if m.group(1) == "":                                           # "last N bytes"
+            start, end = max(0, size - int(m.group(2))), size - 1
+        else:
+            start, end = int(m.group(1)), (int(m.group(2)) if m.group(2) else size - 1)
+        if start >= size or start > end:
+            return Response(status=416, headers={"Content-Range": f"bytes */{size}"})
+        end = min(end, size - 1, start + VIDEO_CHUNK_BYTES - 1)       # answer in chunks; the browser asks for the next one
+        data = gcs_storage.read_range(ref, start, end)
+        if data is None:
+            raise ApiError("Could not read the saved video from storage right now.", 502, "storage_error")
+        return Response(data, 206, headers={**base, "Content-Range": f"bytes {start}-{end}/{size}", "Content-Length": str(len(data))})
+
+    def whole():
+        for start in range(0, size, VIDEO_CHUNK_BYTES):
+            chunk = gcs_storage.read_range(ref, start, min(size, start + VIDEO_CHUNK_BYTES) - 1)
+            if chunk is None:
+                return
+            yield chunk
+    return Response(whole(), 200, headers={**base, "Content-Length": str(size)})
+
+
+@api_bp.route("/alerts/<alert_id>/overlay", methods=["GET"])
+def get_saved_overlay(alert_id):
+    """The detection boxes of a saved video (JSON), used to draw boxes on the playing video."""
+    ref = _media_ref(alert_id, "overlay")
+    if gcs_storage.is_ref(ref):
+        got = gcs_storage.download_ref(ref)
+        if not got:
+            raise ApiError("The saved detection boxes are missing from storage.", 404, "file_missing")
+        body = got[0]
+    elif Path(ref).exists():
+        body = Path(ref).read_bytes()
+    else:
+        raise ApiError("The saved detection boxes are no longer on the server.", 404, "file_missing")
+    return Response(body, 200, headers={"Content-Type": "application/json", "Cache-Control": "private, max-age=3600"})
 
 
 # ── satellite scan ──────────────────────────────────────────────────────

@@ -201,3 +201,93 @@ loadRiverList();
     showRiverDetails(openId);
   }
 })();
+
+
+// ── Manual detections: files uploaded on the Manual Detection page, saved with a name and their result ──
+const savedById = {};
+
+function sdSummary(d) {
+  const parts = Object.entries(d.object_counts || {}).map(([k, v]) => `${escapeHtml(k)} ×${v}`);
+  return parts.length ? parts.join(' · ') : 'No trucks or people detected';
+}
+
+function renderSaved(d) {
+  savedById[d.id] = d;
+  const when = d.detected_at ? new Date(d.detected_at).toLocaleString() : '';
+  const where = d.river_name ? `River: ${escapeHtml(d.river_name)}` : (d.lat != null ? `GPS ${(+d.lat).toFixed(4)}, ${(+d.lng).toFixed(4)}` : 'No location given');
+  const dur = d.file_kind === 'video' && d.video_info && d.video_info.duration_s ? ` · ${d.video_info.duration_s} s` : '';
+  const view = d.has_video ? `<button class="btn primary" onclick="sdPlay('${d.id}')">▶ Play with boxes</button>`
+    : (d.image_url ? `<button class="btn primary" onclick="sdPlay('${d.id}')">🖼 View detection</button>` : '');
+  return `
+    <div class="sd-card" id="sd-${d.id}">
+      <div class="sd-head">
+        <div class="sd-title"><span class="sd-icon">${d.file_kind === 'video' ? '🎞' : '🖼'}</span>
+          <div style="min-width:0;"><strong class="sd-name">${escapeHtml(d.name)}</strong>${d.is_test ? '<span class="test-badge">TEST</span>' : ''}
+            <div class="meta">${escapeHtml(d.original_filename || '')}${dur} · ${escapeHtml(when)} · ${where}</div></div></div>
+        <div class="sd-badges"><span class="severity-badge ${escapeHtml(d.severity || '')}">${escapeHtml(d.severity || '')}</span>
+          <span class="meta">risk ${(d.confidence || 0).toFixed(0)}/100</span></div>
+      </div>
+      <div class="sd-result"><strong>Result:</strong> ${sdSummary(d)}</div>
+      <details class="sd-more"><summary>Full explanation</summary><div class="meta" style="margin-top:6px; line-height:1.5;">${escapeHtml(d.reasoning_text || '')}</div></details>
+      <div class="sd-actions">${view}
+        ${d.pdf_url ? `<a class="btn" href="${d.pdf_url}" target="_blank" rel="noopener">↓ Evidence PDF</a>` : ''}
+        <button class="btn" onclick="sdRename('${d.id}')">✎ Rename</button>
+        <button class="btn danger" onclick="sdDelete('${d.id}')">Delete</button></div>
+      <div class="sd-player" id="sd-player-${d.id}" hidden></div>
+    </div>`;
+}
+
+async function loadSavedDetections() {
+  const box = document.getElementById('saved-list');
+  const count = document.getElementById('saved-count');
+  try {
+    const res = await apiFetch('/api/detections');
+    const list = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(list.error || `Request failed (${res.status})`);
+    count.textContent = list.length ? `${list.length} saved` : '';
+    box.innerHTML = list.length ? list.map(renderSaved).join('')
+      : '<div class="empty-state">No saved detections yet. Upload a video or image on the Manual Detection page and it appears here with its name and result.</div>';
+  } catch (e) {
+    box.innerHTML = `<div class="empty-state" style="color:var(--accent-high);">Could not load saved detections — ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function sdPlay(id) {
+  const d = savedById[id];
+  const slot = document.getElementById(`sd-player-${id}`);
+  if (!slot.hidden) { slot.hidden = true; slot.innerHTML = ''; return; }      // second click closes it
+  slot.hidden = false;
+  if (!d.has_video) { slot.innerHTML = `<img class="sd-img" src="${d.image_url}" alt="Detection image">`; return; }
+  slot.innerHTML = `
+    <div class="rg-vwrap"><video controls playsinline preload="metadata" src="${d.video_url}"></video><canvas></canvas></div>
+    <div class="rg-note" id="sd-note-${id}">Red = truck / excavator · teal = person · dashed grey = car / bus (context). Boxes come from the frames the model analysed.</div>`;
+  const video = slot.querySelector('video'), canvas = slot.querySelector('canvas');
+  video.onerror = () => {
+    document.getElementById(`sd-note-${id}`).innerHTML = `This browser cannot play this video format (for example .mov / .avi / H.265). <a href="${d.video_url}" download>Download it</a> instead.`;
+  };
+  if (d.overlay_url && window.RGOverlay) {
+    try {
+      const res = await apiFetch(d.overlay_url);
+      if (res.ok) window.RGOverlay.attach(video, canvas, await res.json());
+    } catch { /* the video still plays, just without boxes */ }
+  }
+}
+
+async function sdRename(id) {
+  const d = savedById[id];
+  const name = window.prompt('Name for this detection:', d.name);
+  if (name === null || !name.trim()) return;
+  const res = await apiFetch(`/api/detections/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim() }) });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); alert(e.error || 'Could not rename.'); return; }
+  loadSavedDetections();
+}
+
+async function sdDelete(id) {
+  const d = savedById[id];
+  if (!window.confirm(`Delete “${d.name}” with its video, pictures and PDF? This cannot be undone.`)) return;
+  const res = await apiFetch(`/api/detections/${id}`, { method: 'DELETE' });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); alert(e.error || 'Could not delete.'); return; }
+  loadSavedDetections();
+}
+
+loadSavedDetections();

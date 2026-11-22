@@ -27,7 +27,8 @@ _lock = threading.Lock()
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp"}
 _CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".bmp": "image/bmp",
-                  ".pdf": "application/pdf"}
+                  ".pdf": "application/pdf", ".mp4": "video/mp4", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+                  ".mkv": "video/x-matroska", ".json": "application/json"}
 
 # Kinds that are always JPEG and have a deterministic object name (so the API can fetch them without a DB lookup).
 FIXED_KINDS = {
@@ -64,13 +65,17 @@ def _get_bucket():
 
 
 def blob_name(alert_id, kind, ext=""):
-    """alerts/<alert_id>/<file>. kind in FIXED_KINDS, 'original' (needs ext) or 'pdf'."""
+    """alerts/<alert_id>/<file>. kind in FIXED_KINDS, 'original' (needs ext), 'pdf', 'video' (needs ext) or 'overlay'."""
     if kind in FIXED_KINDS:
         return f"alerts/{alert_id}/{FIXED_KINDS[kind]}"
     if kind == "pdf":
         return f"alerts/{alert_id}/evidence.pdf"
     if kind == "original":
         return f"alerts/{alert_id}/original{ext or '.jpg'}"
+    if kind == "video":
+        return f"alerts/{alert_id}/video{ext or '.mp4'}"
+    if kind == "overlay":
+        return f"alerts/{alert_id}/overlay.json"
     raise ValueError(f"unknown media kind: {kind}")
 
 
@@ -100,9 +105,21 @@ def upload_file(local_path, name, content_type=None):
             return None
         ctype = content_type or _CONTENT_TYPES.get(p.suffix.lower(), "application/octet-stream")
         blob = _get_bucket().blob(name)
-        blob.upload_from_filename(str(p), content_type=ctype, timeout=120)
+        blob.upload_from_filename(str(p), content_type=ctype, timeout=600)
         return make_ref(name)
     except Exception as e:  # noqa: BLE001 - storage problems must never lose an alert
+        logger.warning(f"GCS upload failed for {name}: {e}")
+        return None
+
+
+def upload_bytes(data, name, content_type="application/octet-stream"):
+    """Uploads in-memory bytes. Returns the gs:// reference or None."""
+    if not enabled():
+        return None
+    try:
+        _get_bucket().blob(name).upload_from_string(data, content_type=content_type, timeout=120)
+        return make_ref(name)
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"GCS upload failed for {name}: {e}")
         return None
 
@@ -111,7 +128,7 @@ def upload_media(alert_id, media):
     """
     media: {kind: local_path}. Returns the same dict where every successfully uploaded file is replaced by its
     gs:// reference (failures keep the local path, so behaviour degrades to the old local-disk mode).
-    Videos are never uploaded (they can be hundreds of MB); only image originals are.
+    Videos are never uploaded here (they can be hundreds of MB); only image originals are.
     """
     out = dict(media)
     if not enabled():
@@ -158,6 +175,46 @@ def download_name(name):
 def download_ref(ref):
     name = _ref_to_name(ref)
     return download_name(name) if name else None
+
+
+def stat_ref(ref):
+    """(size_bytes, content_type) of an object in our bucket, or None. Used for video Range requests."""
+    name = _ref_to_name(ref)
+    if not name or not enabled():
+        return None
+    try:
+        blob = _get_bucket().get_blob(name)
+        if blob is None:
+            return None
+        return int(blob.size), (blob.content_type or _CONTENT_TYPES.get(Path(name).suffix.lower(), "application/octet-stream"))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"GCS stat failed for {name}: {e}")
+        return None
+
+
+def read_range(ref, start, end):
+    """Bytes start..end (inclusive) of an object in our bucket (so a video can be played / seeked without loading it all)."""
+    name = _ref_to_name(ref)
+    if not name or not enabled():
+        return None
+    try:
+        return _get_bucket().blob(name).download_as_bytes(start=start, end=end, timeout=60)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"GCS range read failed for {name}: {e}")
+        return None
+
+
+def delete_ref(ref):
+    """Best-effort delete of one object in our bucket. Never raises."""
+    name = _ref_to_name(ref)
+    if not name or not enabled():
+        return False
+    try:
+        _get_bucket().blob(name).delete()
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"GCS delete failed for {name}: {e}")
+        return False
 
 
 def probe():
